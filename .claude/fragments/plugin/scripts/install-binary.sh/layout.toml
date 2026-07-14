@@ -1,0 +1,4 @@
+fragments = [{ use = "cc-skills:install-binary-pinned", args = { binary = "cc-sudo", brew = "yasyf/tap/cc-sudo", plugin = "cc-sudo", repo = "yasyf/cc-sudo" } }]
+
+[sources.cc-skills]
+source = "github:yasyf/cc-skills@main"
