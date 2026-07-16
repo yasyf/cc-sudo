@@ -105,7 +105,8 @@ struct Install: AsyncParsableCommand {
 
     func run() async throws {
         do {
-            let helper = try HelperTrust.pinnedHelperBinary()
+            let helperBundle = try HelperTrust.locateBundle()
+            try HelperTrust.validate(bundle: helperBundle)
             guard let console = ConsoleUser.current() else {
                 throw Installer.InstallError.noConsoleUser
             }
@@ -115,7 +116,7 @@ struct Install: AsyncParsableCommand {
             let keyID = try await Installer().install(
                 sourceExecutable: executable,
                 originIdentity: origin,
-                pinnedHelper: helper,
+                helperBundle: helperBundle,
                 console: console
             )
             print("installed \(RunClient.verifierPath) (\(Version.current))")

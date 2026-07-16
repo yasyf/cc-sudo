@@ -58,3 +58,30 @@ func installedAuthkitBundleSatisfiesThePin() throws {
         )
     }
 }
+
+/// M1: the runtime trust anchor is the ROOT-OWNED staged path, never a
+/// user-writable Caskroom path, and it is always validated before use.
+@Test func theRuntimeHelperAnchorIsTheRootOwnedStagedPath() throws {
+    #expect(HelperTrust.stagedBundlePath == "/Library/PrivilegedHelperTools/authkit.app")
+    #expect(!HelperTrust.stagedBundlePath.contains("Caskroom"))
+    #expect(!HelperTrust.stagedBundlePath.contains("Cellar"))
+
+    // A missing staged bundle fails closed with a "run install" signal.
+    let emptyRoot = FileManager.default.temporaryDirectory
+        .appending(component: "anchor-\(UUID().uuidString)", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: emptyRoot, withIntermediateDirectories: true)
+    #expect(throws: HelperTrust.HelperError.self) {
+        _ = try HelperTrust.stagedHelperBinary(root: emptyRoot)
+    }
+
+    // A present-but-unsigned staged bundle is validated (not trusted blindly).
+    let bundle = emptyRoot.appending(path: "Library/PrivilegedHelperTools/authkit.app")
+    let macos = bundle.appending(path: "Contents/MacOS")
+    try FileManager.default.createDirectory(at: macos, withIntermediateDirectories: true)
+    let binary = macos.appending(component: "authkit")
+    try Data("#!/bin/sh\nexit 0\n".utf8).write(to: binary)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path())
+    #expect(throws: HelperTrust.HelperError.self) {
+        _ = try HelperTrust.stagedHelperBinary(root: emptyRoot)
+    }
+}

@@ -91,7 +91,7 @@ public struct Doctor: Sendable {
 
     func helperPinCheck() -> CheckResult {
         do {
-            let binary = try HelperTrust.pinnedHelperBinary()
+            let binary = try HelperTrust.stagedHelperBinary()
             return CheckResult(name: "authkit pin", status: .pass, detail: binary.path())
         } catch {
             return CheckResult(name: "authkit pin", status: .fail, detail: String(describing: error))
@@ -190,7 +190,7 @@ public struct Doctor: Sendable {
         }
         let helper: URL
         do {
-            helper = try HelperTrust.pinnedHelperBinary()
+            helper = try HelperTrust.stagedHelperBinary()
         } catch {
             return CheckResult(name: "prompt probe", status: .fail, detail: "authkit pin failed: \(error)")
         }

@@ -25,32 +25,50 @@ public struct Installer: Sendable {
     /// Every absolute path is re-rooted here so tests install into a temp tree.
     let root: URL
     let euid: @Sendable () -> uid_t
+    let validator: any CodeSignatureValidator
+    /// The cc-sudo self-pin the verifier copy must satisfy before it becomes the
+    /// root-owned NOPASSWD binary.
+    let verifierRequirement: String
+    /// The authkit reverse-pin the staged helper copy must satisfy.
+    let helperRequirement: String
 
     public init(
         runner: any ProcessRunner = LiveProcessRunner(),
         root: URL = URL(filePath: "/", directoryHint: .isDirectory),
-        euid: @escaping @Sendable () -> uid_t = { geteuid() }
+        euid: @escaping @Sendable () -> uid_t = { geteuid() },
+        validator: any CodeSignatureValidator = LiveCodeSignatureValidator(),
+        verifierRequirement: String = DesignatedRequirement.string(identifier: DesignatedRequirement.ccSudoIdentifier),
+        helperRequirement: String = HelperTrust.requirementString()
     ) {
         self.runner = runner
         self.root = root
         self.euid = euid
+        self.validator = validator
+        self.verifierRequirement = verifierRequirement
+        self.helperRequirement = helperRequirement
     }
 
-    /// The full install: verify authkit's pin, copy the running binary to the
-    /// root-owned verifier path, write + validate the sudoers rule, generate
-    /// the user's SE key through the pinned helper, and enroll its public key.
-    /// Requires root (`sudo cc-sudo install`); the SE keygen drops back to the
-    /// console user, whose key it is.
+    /// The full install: copy the running binary to the root-owned verifier
+    /// path (provenance-checked against cc-sudo's own DR both before and after
+    /// the copy), write + validate the sudoers rule, stage the validated authkit
+    /// bundle into a root-owned directory, generate the user's SE key through
+    /// the staged helper, and enroll its public key. Requires root
+    /// (`sudo cc-sudo install`); the SE keygen drops back to the console user,
+    /// whose key it is.
+    ///
+    /// `helperBundle` is the Caskroom authkit.app the caller has already located
+    /// and validated; the installer re-validates the staged copy before use.
     public func install(
         sourceExecutable: URL,
         originIdentity: String,
-        pinnedHelper: URL,
+        helperBundle: URL,
         console: ConsoleUser
     ) async throws -> String {
         guard euid() == 0 else { throw InstallError.notRoot }
         try installVerifier(sourceExecutable: sourceExecutable)
         try await installSudoers()
-        let keyID = try await enrollSelfKey(pinnedHelper: pinnedHelper, console: console)
+        let stagedHelper = try stageHelperBundle(from: helperBundle)
+        let keyID = try await enrollSelfKey(pinnedHelper: stagedHelper, console: console)
         try writeRootFile(
             at: rooted(OriginIdentity.path),
             contents: Data((originIdentity + "\n").utf8),
@@ -75,8 +93,16 @@ public struct Installer: Sendable {
         }
     }
 
+    /// Copies `sourceExecutable` to the root-owned verifier path behind two
+    /// provenance checks against cc-sudo's own designated requirement: the
+    /// SOURCE before the copy, and — critically — the STAGED copy in the
+    /// root-owned directory AFTER the copy but BEFORE promotion. The staged
+    /// bytes are the ones promoted, and the root-owned staging dir cannot be
+    /// swapped, so a source swapped mid-copy is caught. Any signature failure
+    /// aborts before the binary can become the NOPASSWD root verifier.
     func installVerifier(sourceExecutable: URL) throws {
         let fileManager = FileManager.default
+        try validator.validate(path: sourceExecutable, requirement: verifierRequirement)
         let directory = rooted(Self.verifierDirectory)
         try fileManager.createDirectory(
             at: directory,
@@ -90,7 +116,39 @@ public struct Installer: Sendable {
         }
         try fileManager.copyItem(at: sourceExecutable, to: staging)
         try fileManager.setAttributes(attributes(mode: 0o755), ofItemAtPath: staging.path())
+        try validator.validate(path: staging, requirement: verifierRequirement)
         _ = try fileManager.replaceItemAt(destination, withItemAt: staging)
+    }
+
+    /// Copies the validated Caskroom authkit bundle into the root-owned
+    /// `/Library/PrivilegedHelperTools/authkit.app` and re-validates the STAGED
+    /// copy against the authkit DR before promotion — the runtime verifier pins
+    /// and spawns THIS root-owned copy, so a bundle swapped mid-copy is caught
+    /// and the validate/exec swap race on the group-writable Caskroom path is
+    /// removed. A copy of a signed bundle keeps its signature, entitlements, and
+    /// provisioning profile, so the SE key still works. Returns the staged inner
+    /// executable for keygen.
+    func stageHelperBundle(from caskBundle: URL) throws -> URL {
+        let fileManager = FileManager.default
+        let directory = rooted(Self.verifierDirectory)
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: attributes(mode: 0o755)
+        )
+        let destination = HelperTrust.stagedBundleURL(root: root)
+        let staging = directory.appending(component: "authkit.app.installing", directoryHint: .isDirectory)
+        if fileManager.fileExists(atPath: staging.path()) {
+            try fileManager.removeItem(at: staging)
+        }
+        try fileManager.copyItem(at: caskBundle, to: staging)
+        try validator.validate(path: staging, requirement: helperRequirement)
+        if fileManager.fileExists(atPath: destination.path()) {
+            _ = try fileManager.replaceItemAt(destination, withItemAt: staging)
+        } else {
+            try fileManager.moveItem(at: staging, to: destination)
+        }
+        return destination.appending(path: HelperTrust.executableSubpath)
     }
 
     func installSudoers() async throws {

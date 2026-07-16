@@ -2,6 +2,7 @@ import AuthKit
 @testable import CCSudo
 import CryptoKit
 import Foundation
+import Security
 
 /// An ephemeral P-256 signer standing in for the Secure-Enclave key: same
 /// curve, same ecdsaSignatureMessageX962SHA256 format, no hardware or
@@ -22,6 +23,22 @@ struct TestSigner {
         let subject = Subject.digest(argv: argv, originHost: originHost)
         return try privateKey.signature(for: Attestation.message(nonce: nonce, subject: subject))
             .derRepresentation
+    }
+}
+
+/// A code-signature validator the test scripts: accepts by default, or throws
+/// for paths whose validation should fail (an unsigned/wrong-team copy).
+struct StubCodeSignatureValidator: CodeSignatureValidator {
+    let reject: @Sendable (URL, String) -> Bool
+
+    init(reject: @escaping @Sendable (URL, String) -> Bool = { _, _ in false }) {
+        self.reject = reject
+    }
+
+    func validate(path: URL, requirement: String) throws {
+        if reject(path, requirement) {
+            throw CodeSignatureError.rejected(path: path.path(), status: errSecCSUnsigned)
+        }
     }
 }
 

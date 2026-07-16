@@ -51,7 +51,7 @@ public extension Verifier.Dependencies {
     static func live() -> Verifier.Dependencies {
         Verifier.Dependencies(
             generateNonce: { try Nonce.generate() },
-            pinHelper: { try HelperTrust.pinnedHelperBinary() },
+            pinHelper: { try HelperTrust.stagedHelperBinary() },
             consentSource: { pinnedHelper in
                 let synckit = SynckitConsentSource(
                     client: SynckitClient(socketPath: liveSocketPath()),
