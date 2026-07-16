@@ -1,6 +1,14 @@
 {
-  "originHash" : "c8b8e307db42028d2360591ec615e10f9e435c27e3be568fde5adf001eccee93",
+  "originHash" : "fd1e0ab3da9e2868b229c841355e5c64d0fb44ddbf0eec2e9acb4ef92ea0723b",
   "pins" : [
+    {
+      "identity" : "authkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/yasyf/authkit",
+      "state" : {
+        "revision" : "6818dc5212434fad3fbb74999b52e825fc430b5f"
+      }
+    },
     {
       "identity" : "eventsource",
       "kind" : "remoteSourceControl",
