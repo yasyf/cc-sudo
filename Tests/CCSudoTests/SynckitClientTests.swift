@@ -30,8 +30,12 @@ private final class OneShotServer: @unchecked Sendable {
         try #require(bound == 0)
         try #require(listen(listener, 1) == 0)
 
+        // A DEDICATED thread, not DispatchQueue.global(): the acceptor blocks in
+        // accept()/read(), and running these socket tests in parallel on the
+        // shared concurrent queue starves its thread pool under CI load (some
+        // acceptors never get scheduled before the client's deadline elapses).
         let acceptor = listener
-        DispatchQueue.global().async { [weak self] in
+        let worker = Thread { [weak self] in
             let connection = accept(acceptor, nil, nil)
             guard connection >= 0 else { return }
             defer { close(connection) }
@@ -47,6 +51,8 @@ private final class OneShotServer: @unchecked Sendable {
             _ = out.withUnsafeBytes { write(connection, $0.baseAddress, $0.count) }
             self?.done.signal()
         }
+        worker.stackSize = 1 << 20
+        worker.start()
     }
 
     func requestLine() -> Data {
@@ -75,7 +81,7 @@ private let params = SynckitConsentParams(
     {"ok":true,"result":{"verdict":"approved","approved_by":"studio","routed":true,"cached":false,\
     "attestation":{"key_id":"kid","sig":"c2ln","signed_by":"studio"}}}
     """)
-    let client = SynckitClient(socketPath: server.path, deadline: 5)
+    let client = SynckitClient(socketPath: server.path, deadline: 30)
     let result = try await client.requestConsent(params)
 
     #expect(result.verdict == "approved")
@@ -97,7 +103,7 @@ private let params = SynckitConsentParams(
 
 @Test func rpcErrorsThrow() async throws {
     let server = try OneShotServer(reply: #"{"ok":false,"error":"prompt gate wedged"}"#)
-    let client = SynckitClient(socketPath: server.path, deadline: 5)
+    let client = SynckitClient(socketPath: server.path, deadline: 30)
     await #expect(throws: SynckitClient.ClientError.self) {
         _ = try await client.requestConsent(params)
     }
@@ -124,7 +130,7 @@ private let params = SynckitConsentParams(
 private func consent(reply: String, selfIdentity: String = "laptop") async throws -> SignedConsent {
     let server = try OneShotServer(reply: reply)
     let source = SynckitConsentSource(
-        client: SynckitClient(socketPath: server.path, deadline: 5),
+        client: SynckitClient(socketPath: server.path, deadline: 30),
         selfIdentity: selfIdentity
     )
     return try await source.obtainSignature(
