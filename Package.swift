@@ -4,8 +4,7 @@ import PackageDescription
 /// Logic lives in the CCSudo library; the executable target is a thin
 /// ArgumentParser shell. Tests import the library, never the executable.
 ///
-/// AuthKit is pinned to an authkit `main` revision until authkit cuts its first
-/// signed release, when this swaps to a `from:` version tag
+/// AuthKit comes from the authkit package's tagged release
 /// (https://github.com/yasyf/authkit). cc-sudo uses only AuthKit's pure-Swift
 /// verification helpers (Attestation, Subject, payload types) — every
 /// Secure-Enclave and biometric operation stays behind the signed authkit
@@ -20,7 +19,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk", from: "0.12.1"),
-        .package(url: "https://github.com/yasyf/authkit", revision: "6818dc5212434fad3fbb74999b52e825fc430b5f"),
+        .package(url: "https://github.com/yasyf/authkit", from: "0.1.0"),
     ],
     targets: [
         .target(
