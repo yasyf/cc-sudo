@@ -39,11 +39,16 @@ public struct TrustStore: Sendable {
         return peersDirectory.appending(component: "\(host).pub")
     }
 
-    /// A peer name becomes a filename under a root-owned directory, so it must
-    /// never traverse: mesh-name characters only ("me@studio", "host-1.local").
+    /// A peer name becomes a filename under a root-owned directory AND a
+    /// positional ssh argument, so it must never traverse (no leading dot, no
+    /// "/") and never start with a dash — a leading-dash name like "-Fcat" or
+    /// "-oProxyCommand=x" would be read by ssh as an option flag and run an
+    /// attacker-chosen command as root. Mesh-name characters only
+    /// ("me@studio", "host-1.local").
     public static func validatePeerName(_ name: String) throws {
         guard !name.isEmpty,
               !name.hasPrefix("."),
+              !name.hasPrefix("-"),
               name.unicodeScalars.allSatisfy(peerNameCharacters.contains)
         else {
             throw TrustError.invalidPeerName(name)

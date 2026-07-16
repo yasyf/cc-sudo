@@ -21,7 +21,7 @@ private func temporaryStore() throws -> TrustStore {
 
     let spawn = try #require(runner.spawns.first)
     #expect(spawn.executable == "/usr/bin/ssh")
-    #expect(spawn.arguments == ["-o", "BatchMode=yes", "studio", "cat", "/etc/cc-sudo/trusted/self.pub"])
+    #expect(spawn.arguments == ["-o", "BatchMode=yes", "--", "studio", "cat", "/etc/cc-sudo/trusted/self.pub"])
 }
 
 @Test func trustRequiresRoot() async throws {
@@ -56,4 +56,14 @@ private func temporaryStore() throws -> TrustStore {
     await #expect(throws: PeerTrust.PeerTrustError.self) {
         _ = try await trust.trust(peer: "studio")
     }
+}
+
+@Test(arguments: ["-F", "-oProxyCommand=x", "-Fcat", "--"])
+func trustRejectsDashLedPeerNamesBeforeAnySSH(name: String) async throws {
+    let runner = FakeRunner { _, _ in .exit(0) }
+    let trust = try PeerTrust(runner: runner, store: temporaryStore(), euid: { 0 })
+    await #expect(throws: TrustStore.TrustError.self) {
+        _ = try await trust.trust(peer: name)
+    }
+    #expect(runner.spawns.isEmpty)
 }

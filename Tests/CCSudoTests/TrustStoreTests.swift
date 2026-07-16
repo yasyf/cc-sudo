@@ -1,4 +1,5 @@
 @testable import CCSudo
+import CryptoKit
 import Foundation
 import Testing
 
@@ -33,6 +34,18 @@ private func temporaryStore() throws -> TrustStore {
     #expect(throws: TrustStore.TrustError.self) { try store.selfKey() }
 }
 
+/// The P-256 curve gap: a well-formed X9.63 key from the WRONG curve (P-384)
+/// must be rejected, not silently accepted as if it were P-256. The
+/// kSecAttrKeySizeInBits enforcement lands in authkit's Attestation; this test
+/// pins cc-sudo's expectation of it. If it fails, the authkit curve check is
+/// not yet present in the local-path dependency.
+@Test func aValidNonP256KeyFileIsRejected() throws {
+    let store = try temporaryStore()
+    let p384 = P384.Signing.PrivateKey().publicKey.x963Representation
+    try Data(p384.base64EncodedString().utf8).write(to: store.selfKeyURL)
+    #expect(throws: TrustStore.TrustError.self) { try store.selfKey() }
+}
+
 @Test func peerKeysResolveByHostName() throws {
     let store = try temporaryStore()
     let signer = TestSigner()
@@ -52,7 +65,10 @@ func meshShapedPeerNamesAreAccepted(name: String) {
     #expect(throws: Never.self) { try TrustStore.validatePeerName(name) }
 }
 
-@Test(arguments: ["", "../etc", "a/b", ".hidden", "host name", "host\nname", "höst"])
-func traversalShapedPeerNamesAreRejected(name: String) {
+@Test(arguments: [
+    "", "../etc", "a/b", ".hidden", "host name", "host\nname", "höst",
+    "-F", "-oProxyCommand=x", "-Fcat", "--",
+])
+func traversalOrDashShapedPeerNamesAreRejected(name: String) {
     #expect(throws: TrustStore.TrustError.self) { try TrustStore.validatePeerName(name) }
 }

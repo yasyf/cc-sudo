@@ -40,9 +40,12 @@ public struct PeerTrust: Sendable {
         guard euid() == 0 else { throw PeerTrustError.notRoot }
         try TrustStore.validatePeerName(peer)
 
+        // The "--" end-of-options token stops ssh from reading `peer` as a flag
+        // even if validatePeerName's dash guard is ever relaxed — defense in
+        // depth on the root-executed ssh spawn.
         let result = try await runner.run(
             executable: Self.ssh,
-            arguments: ["-o", "BatchMode=yes", peer, "cat", "/etc/cc-sudo/trusted/self.pub"],
+            arguments: ["-o", "BatchMode=yes", "--", peer, "cat", "/etc/cc-sudo/trusted/self.pub"],
             stdin: nil,
             environment: nil
         )
