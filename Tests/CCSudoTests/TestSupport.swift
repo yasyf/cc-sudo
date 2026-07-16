@@ -57,6 +57,21 @@ struct Executed: Error {
     let argv: [String]
 }
 
+/// Records every argv a fake executor was asked to run, so a test can assert
+/// the executor was NEVER invoked — discriminating a rejection from an exec.
+final class ExecutionRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [[String]] = []
+
+    func record(_ argv: [String]) {
+        lock.withLock { recorded.append(argv) }
+    }
+
+    var invocations: [[String]] {
+        lock.withLock { recorded }
+    }
+}
+
 /// A ProcessRunner that returns canned results and records every spawn.
 final class FakeRunner: ProcessRunner, @unchecked Sendable {
     struct Spawn {

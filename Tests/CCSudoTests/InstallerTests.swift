@@ -121,6 +121,45 @@ private func fakeSourceBinary(in root: URL) throws -> URL {
     ))
 }
 
+@Test func installRejectsATamperedStagedVerifierBeforePromotion() async throws {
+    let root = try temporaryRoot()
+    let signer = TestSigner()
+    let keygenOutput = try JSONEncoder().encode(
+        KeygenResponse(keyID: "kid123", publicKey: signer.publicKeyBase64)
+    )
+    // A fully-succeeding runner: were the staged-copy validation deleted,
+    // install would run to completion and promote the tampered binary.
+    let runner = FakeRunner { executable, _ in
+        executable == LocalHelper.launchctl
+            ? SubprocessResult(exitCode: 0, stdout: keygenOutput, stderr: Data())
+            : .exit(0)
+    }
+    // The SOURCE binary passes the cc-sudo self-pin; the STAGED
+    // cc-sudo-exec.installing copy fails it — a source swapped mid-copy. Only
+    // the staged-copy check (validate AFTER the copy, BEFORE replaceItemAt)
+    // can catch this, so this test fails if that validation is removed.
+    let validator = StubCodeSignatureValidator { path, requirement in
+        requirement == DesignatedRequirement.string(identifier: DesignatedRequirement.ccSudoIdentifier)
+            && path.lastPathComponent == "cc-sudo-exec.installing"
+    }
+    let installer = Installer(runner: runner, root: root, euid: { 0 }, validator: validator)
+
+    await #expect(throws: CodeSignatureError.self) {
+        _ = try await installer.install(
+            sourceExecutable: fakeSourceBinary(in: root),
+            originIdentity: "laptop",
+            helperBundle: fakeHelperBundle(in: root),
+            console: ConsoleUser(name: "yasyf", uid: 501)
+        )
+    }
+    // The tampered staged copy was never promoted to the NOPASSWD verifier path.
+    #expect(!FileManager.default.fileExists(
+        atPath: root.appending(path: "Library/PrivilegedHelperTools/cc-sudo-exec").path()
+    ))
+    // Install aborted inside installVerifier: no sudoers check, no keygen ran.
+    #expect(runner.spawns.isEmpty)
+}
+
 @Test func installRejectsAWrongTeamStagedHelperBeforePromotion() async throws {
     let root = try temporaryRoot()
     let runner = FakeRunner { executable, _ in

@@ -299,7 +299,11 @@ private let nonceB = Data((100 ..< 124).map { UInt8($0) })
 }
 
 /// (5) A verification that THROWS (malformed key material) is treated as a
-/// rejection — never as an approval, never an exec.
+/// rejection — never as an approval, never an exec. The assertions
+/// discriminate rejection from execution: the thrown error must be the
+/// verification error itself (not the executor's sentinel), and the executor
+/// must never have been invoked — a fail-open regression that swallowed the
+/// verification error and proceeded to exec fails both.
 @Test func throwingVerificationIsTreatedAsRejection() async throws {
     let signer = TestSigner()
     let source = ScriptedConsentSource { request in
@@ -311,26 +315,46 @@ private let nonceB = Data((100 ..< 124).map { UInt8($0) })
     }
     // The enrolled key bytes are garbage: Attestation.verify throws rather than
     // returning false. The verifier must propagate that as a hard failure.
-    let verifier = Verifier(dependencies: makeVerifierDependencies(
+    let recorder = ExecutionRecorder()
+    var dependencies = makeVerifierDependencies(
         nonces: [nonceA], source: source, selfKey: Data("not a key".utf8)
-    ))
-    await #expect(throws: (any Error).self) {
+    )
+    dependencies.execute = { argv in
+        recorder.record(argv)
+        throw Executed(argv: argv)
+    }
+    let verifier = Verifier(dependencies: dependencies)
+    let error = await #expect(throws: Attestation.VerificationError.self) {
         try await verifier.authorizeAndRun(argv: argv)
+    }
+    #expect(recorder.invocations.isEmpty)
+    guard case .malformedPublicKey = error else {
+        Issue.record("want malformedPublicKey, got \(String(describing: error))")
+        return
     }
 }
 
-/// (6) One combined adversarial routed E2E: a forged signed_by peer, a real SE
-/// signature over a SPOOFED origin_host, verified against the real enrolled peer
-/// key. The origin verifier recomputes with ITS own identity and rejects.
-@Test func combinedAdversarialRoutedApprovalIsRejected() async throws {
-    let peer = TestSigner()
+/// (6) A combined adversarial routed E2E: signed_by is FORGED — it names
+/// "studio", whose enrolled key did NOT produce the signature (the enrolled
+/// DECOY key signed) — on a consent claiming routed provenance. The verifier
+/// must select the enrolled key by signed_by, fail the signature check against
+/// it, and reject with signedBy "studio" — never scan other enrolled keys.
+/// The signed origin binding parameterizes the attack flavor:
+///   - "": a local-shaped signature presented under a routed flag (the flag
+///     and the signed binding are inconsistent)
+///   - "laptop": the CORRECT origin — rejection can only come from
+///     signed_by-key-selection failing, so a try-every-enrolled-key
+///     regression would exec and fail this arm
+///   - "evil-origin": spoofed provenance combined with the forged signed_by
+@Test(arguments: ["", "laptop", "evil-origin"])
+func combinedAdversarialRoutedApprovalIsRejected(signedOriginHost: String) async throws {
+    let studio = TestSigner()
     let decoy = TestSigner()
-    // The peer signs a subject claiming the request came from "evil-origin"
-    // (forged provenance), routed onto the peer path with a genuine key.
+    // The decoy's key signs; the transport claims signed_by "studio".
     let source = ScriptedConsentSource { request in
         try SignedConsent(
             keyID: "k",
-            signature: peer.sign(nonce: request.nonce, argv: request.argv, originHost: "evil-origin"),
+            signature: decoy.sign(nonce: request.nonce, argv: request.argv, originHost: signedOriginHost),
             origin: .peer(host: "studio")
         )
     }
@@ -338,10 +362,14 @@ private let nonceB = Data((100 ..< 124).map { UInt8($0) })
         nonces: [nonceA],
         source: source,
         selfKey: nil,
-        peerKeys: ["studio": peer.publicKeyX963, "other": decoy.publicKeyX963],
+        peerKeys: ["studio": studio.publicKeyX963, "decoy": decoy.publicKeyX963],
         originIdentity: "laptop"
     ))
-    await #expect(throws: VerifierError.self) {
+    let error = await #expect(throws: VerifierError.self) {
         try await verifier.authorizeAndRun(argv: argv)
+    }
+    guard case .signatureRejected(signedBy: "studio") = error else {
+        Issue.record("want signatureRejected(signedBy: studio), got \(String(describing: error))")
+        return
     }
 }
