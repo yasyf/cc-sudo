@@ -26,8 +26,12 @@ public enum RunClient {
 
     /// Replaces this process with the privileged invocation: stdio inherited,
     /// the command's (or the verifier's documented) exit status passes through.
+    /// `argv[0]` is resolved to an absolute path against the caller's PATH here,
+    /// on the unprivileged side, so the signed subject binds the absolute binary
+    /// and root never runs a PATH search.
     public static func exec(argv: [String]) throws -> Never {
-        try Execution.replaceProcess(argv: invocation(argv: argv))
+        let resolved = try PathResolver.resolve(argv: argv)
+        try Execution.replaceProcess(argv: invocation(argv: resolved))
     }
 
     /// Runs the privileged invocation capturing output, for MCP. `timeoutMS`
@@ -37,7 +41,11 @@ public enum RunClient {
         cwd: String? = nil,
         timeoutMS: Int? = nil
     ) async throws -> CapturedRun {
-        let full = invocation(argv: argv)
+        let resolved = try PathResolver.resolve(
+            argv: argv,
+            currentDirectory: cwd ?? FileManager.default.currentDirectoryPath
+        )
+        let full = invocation(argv: resolved)
         let process = Process()
         process.executableURL = URL(filePath: full[0])
         process.arguments = Array(full.dropFirst())

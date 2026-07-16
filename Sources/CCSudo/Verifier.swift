@@ -4,6 +4,7 @@ import os
 
 public enum VerifierError: Error, Sendable {
     case emptyArgv
+    case nonAbsoluteExecutable(String)
     case signatureRejected(signedBy: String)
 }
 
@@ -63,6 +64,11 @@ public struct Verifier: Sendable {
     /// the target command; every other outcome throws.
     public func authorizeAndRun(argv: [String]) async throws -> Never {
         guard !argv.isEmpty else { throw VerifierError.emptyArgv }
+        // Fail closed on a non-absolute argv[0]: root never runs a PATH search,
+        // so a relative command that reached the verifier (bypassing the run
+        // side that resolves it) could otherwise let a planted binary in a
+        // writable dir run as root under an approved-looking name.
+        guard argv[0].hasPrefix("/") else { throw VerifierError.nonAbsoluteExecutable(argv[0]) }
 
         let nonce = try dependencies.generateNonce()
         let pinnedHelper = try dependencies.pinHelper()
