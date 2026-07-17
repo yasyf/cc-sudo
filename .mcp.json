@@ -2,7 +2,9 @@
   "mcpServers": {
     "xcodebuildmcp": {
       "command": "xcodebuildmcp",
-      "args": ["mcp"]
+      "args": [
+        "mcp"
+      ]
     }
   }
 }
