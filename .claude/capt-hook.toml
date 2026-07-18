@@ -5,6 +5,8 @@
 
 [packs.steering]
 
+[packs.performance]
+
 [packs.cc-notes]
 source = "github:yasyf/cc-notes@latest"
 
