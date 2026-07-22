@@ -29,8 +29,6 @@ private final class OneShotServer: @unchecked Sendable {
     private let directory: URL
     private let server: SocketServer
     private let capture: Capture
-    private let closeLock = NSLock()
-    private var closed = false
 
     init(reply: String) throws {
         directory = FileManager.default.temporaryDirectory
@@ -57,7 +55,6 @@ private final class OneShotServer: @unchecked Sendable {
     }
 
     func close() async {
-        guard markClosed() else { return }
         let server = server
         let directory = directory
         await withCheckedContinuation { continuation in
@@ -65,23 +62,6 @@ private final class OneShotServer: @unchecked Sendable {
                 Self.settle(server: server, directory: directory)
                 continuation.resume()
             }
-        }
-    }
-
-    deinit {
-        guard markClosed() else { return }
-        let server = server
-        let directory = directory
-        DispatchQueue.global(qos: .userInitiated).async {
-            Self.settle(server: server, directory: directory)
-        }
-    }
-
-    private func markClosed() -> Bool {
-        closeLock.withLock {
-            guard !closed else { return false }
-            closed = true
-            return true
         }
     }
 
