@@ -4,6 +4,8 @@ import Foundation
 import Testing
 
 private final class OneShotServer: @unchecked Sendable {
+    private static let teardownQueue = DispatchQueue(label: "com.yasyf.cc-sudo.synckit-test-teardown")
+
     struct Request {
         let operation: String
         let payload: Data
@@ -58,7 +60,7 @@ private final class OneShotServer: @unchecked Sendable {
         let server = server
         let directory = directory
         await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
+            Self.teardownQueue.async {
                 Self.settle(server: server, directory: directory)
                 continuation.resume()
             }
