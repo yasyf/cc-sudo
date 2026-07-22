@@ -54,9 +54,13 @@ private final class OneShotServer: @unchecked Sendable {
         try capture.value()
     }
 
-    deinit {
+    func close() {
         server.stop()
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    deinit {
+        close()
     }
 }
 
@@ -76,7 +80,10 @@ private let params = SynckitConsentParams(
     "attestation":{"key_id":"kid","sig":"c2ln","signed_by":"studio"}}}
     """)
     let client = SynckitClient(socketPath: server.path, deadline: 30)
-    defer { client.close() }
+    defer {
+        client.close()
+        server.close()
+    }
     let result = try await client.requestConsent(params)
 
     #expect(result.verdict == "approved")
@@ -101,7 +108,10 @@ private let params = SynckitConsentParams(
 @Test func rpcErrorsThrow() async throws {
     let server = try OneShotServer(reply: #"{"ok":false,"error":"prompt gate wedged"}"#)
     let client = SynckitClient(socketPath: server.path, deadline: 30)
-    defer { client.close() }
+    defer {
+        client.close()
+        server.close()
+    }
     await #expect(throws: SynckitClient.ClientError.self) {
         _ = try await client.requestConsent(params)
     }
@@ -130,7 +140,10 @@ private let params = SynckitConsentParams(
 private func consent(reply: String, selfIdentity: String = "laptop") async throws -> SignedConsent {
     let server = try OneShotServer(reply: reply)
     let client = SynckitClient(socketPath: server.path, deadline: 30)
-    defer { client.close() }
+    defer {
+        client.close()
+        server.close()
+    }
     let source = SynckitConsentSource(
         client: client,
         selfIdentity: selfIdentity
