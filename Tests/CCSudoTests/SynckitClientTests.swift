@@ -29,6 +29,8 @@ private final class OneShotServer: @unchecked Sendable {
     private let directory: URL
     private let server: SocketServer
     private let capture: Capture
+    private let closeLock = NSLock()
+    private var closed = false
 
     init(reply: String) throws {
         directory = FileManager.default.temporaryDirectory
@@ -54,13 +56,56 @@ private final class OneShotServer: @unchecked Sendable {
         try capture.value()
     }
 
-    func close() {
-        server.stop()
-        try? FileManager.default.removeItem(at: directory)
+    func close() async {
+        guard markClosed() else { return }
+        let server = server
+        let directory = directory
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                Self.settle(server: server, directory: directory)
+                continuation.resume()
+            }
+        }
     }
 
     deinit {
-        close()
+        guard markClosed() else { return }
+        let server = server
+        let directory = directory
+        DispatchQueue.global(qos: .userInitiated).async {
+            Self.settle(server: server, directory: directory)
+        }
+    }
+
+    private func markClosed() -> Bool {
+        closeLock.withLock {
+            guard !closed else { return false }
+            closed = true
+            return true
+        }
+    }
+
+    private static func settle(server: SocketServer, directory: URL) {
+        server.stop()
+        try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+private func withOneShotServer<Result>(
+    reply: String,
+    body: (SynckitClient, OneShotServer) async throws -> Result
+) async throws -> Result {
+    let server = try OneShotServer(reply: reply)
+    let client = SynckitClient(socketPath: server.path, deadline: 30)
+    do {
+        let result = try await body(client, server)
+        client.close()
+        await server.close()
+        return result
+    } catch {
+        client.close()
+        await server.close()
+        throw error
     }
 }
 
@@ -75,45 +120,37 @@ private let params = SynckitConsentParams(
 )
 
 @Test func consentRequestUsesExactPersistentWireShape() async throws {
-    let server = try OneShotServer(reply: """
+    try await withOneShotServer(reply: """
     {"ok":true,"result":{"verdict":"approved","approved_by":"studio","routed":true,"cached":false,\
     "attestation":{"key_id":"kid","sig":"c2ln","signed_by":"studio"}}}
-    """)
-    let client = SynckitClient(socketPath: server.path, deadline: 30)
-    defer {
-        client.close()
-        server.close()
+    """) { client, server in
+        let result = try await client.requestConsent(params)
+
+        #expect(result.verdict == "approved")
+        #expect(result.routed == true)
+        let attestation = try #require(result.attestation)
+        #expect(attestation.keyID == "kid")
+        #expect(attestation.sig == "c2ln")
+        #expect(attestation.signedBy == "studio")
+
+        let request = try server.request()
+        #expect(request.operation == SynckitClient.operation)
+        let sent = try JSONSerialization.jsonObject(with: request.payload) as? [String: Any]
+        #expect(sent?["method"] as? String == "consent.request")
+        let sentParams = try #require(sent?["params"] as? [String: Any])
+        #expect(sentParams["client"] as? String == "cc-sudo")
+        #expect(sentParams["argv"] as? [String] == ["dscacheutil", "-flushcache"])
+        #expect(sentParams["ttl_ms"] as? Int == 0)
+        #expect(sentParams["local_only"] as? Bool == false)
+        #expect(sentParams["nonce"] as? String == params.nonce)
     }
-    let result = try await client.requestConsent(params)
-
-    #expect(result.verdict == "approved")
-    #expect(result.routed == true)
-    let attestation = try #require(result.attestation)
-    #expect(attestation.keyID == "kid")
-    #expect(attestation.sig == "c2ln")
-    #expect(attestation.signedBy == "studio")
-
-    let request = try server.request()
-    #expect(request.operation == SynckitClient.operation)
-    let sent = try JSONSerialization.jsonObject(with: request.payload) as? [String: Any]
-    #expect(sent?["method"] as? String == "consent.request")
-    let sentParams = try #require(sent?["params"] as? [String: Any])
-    #expect(sentParams["client"] as? String == "cc-sudo")
-    #expect(sentParams["argv"] as? [String] == ["dscacheutil", "-flushcache"])
-    #expect(sentParams["ttl_ms"] as? Int == 0)
-    #expect(sentParams["local_only"] as? Bool == false)
-    #expect(sentParams["nonce"] as? String == params.nonce)
 }
 
 @Test func rpcErrorsThrow() async throws {
-    let server = try OneShotServer(reply: #"{"ok":false,"error":"prompt gate wedged"}"#)
-    let client = SynckitClient(socketPath: server.path, deadline: 30)
-    defer {
-        client.close()
-        server.close()
-    }
-    await #expect(throws: SynckitClient.ClientError.self) {
-        _ = try await client.requestConsent(params)
+    _ = try await withOneShotServer(reply: #"{"ok":false,"error":"prompt gate wedged"}"#) { client, _ in
+        await #expect(throws: SynckitClient.ClientError.self) {
+            _ = try await client.requestConsent(params)
+        }
     }
 }
 
@@ -138,19 +175,15 @@ private let params = SynckitConsentParams(
 // MARK: - SynckitConsentSource verdict mapping over the real socket
 
 private func consent(reply: String, selfIdentity: String = "laptop") async throws -> SignedConsent {
-    let server = try OneShotServer(reply: reply)
-    let client = SynckitClient(socketPath: server.path, deadline: 30)
-    defer {
-        client.close()
-        server.close()
+    try await withOneShotServer(reply: reply) { client, _ in
+        let source = SynckitConsentSource(
+            client: client,
+            selfIdentity: selfIdentity
+        )
+        return try await source.obtainSignature(
+            ConsentRequest(argv: ["dscacheutil", "-flushcache"], nonce: Data(repeating: 2, count: 24))
+        )
     }
-    let source = SynckitConsentSource(
-        client: client,
-        selfIdentity: selfIdentity
-    )
-    return try await source.obtainSignature(
-        ConsentRequest(argv: ["dscacheutil", "-flushcache"], nonce: Data(repeating: 2, count: 24))
-    )
 }
 
 @Test func routedApprovalMapsToThePeerOrigin() async throws {
