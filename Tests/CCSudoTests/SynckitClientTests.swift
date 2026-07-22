@@ -1,68 +1,62 @@
 @testable import CCSudo
+import DaemonKit
 import Foundation
 import Testing
 
-/// A one-shot ndjson server on a real unix socket: reads one line, answers the
-/// scripted reply, and hands the captured request line back to the test — the
-/// socket is a real boundary, not a mocked driver.
 private final class OneShotServer: @unchecked Sendable {
-    let path: String
-    private let listener: Int32
-    private var captured: Data = .init()
-    private let done = DispatchSemaphore(value: 0)
-
-    init(reply: String) throws {
-        path = FileManager.default.temporaryDirectory
-            .appending(component: "ck-\(UInt32.random(in: 0 ..< UInt32.max)).sock").path()
-        listener = socket(AF_UNIX, SOCK_STREAM, 0)
-        try #require(listener >= 0)
-
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let bytes = Array(path.utf8)
-        try #require(bytes.count < MemoryLayout.size(ofValue: address.sun_path))
-        withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: bytes) }
-        let bound = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        try #require(bound == 0)
-        try #require(listen(listener, 1) == 0)
-
-        // A DEDICATED thread, not DispatchQueue.global(): the acceptor blocks in
-        // accept()/read(), and running these socket tests in parallel on the
-        // shared concurrent queue starves its thread pool under CI load (some
-        // acceptors never get scheduled before the client's deadline elapses).
-        let acceptor = listener
-        let worker = Thread { [weak self] in
-            let connection = accept(acceptor, nil, nil)
-            guard connection >= 0 else { return }
-            defer { close(connection) }
-            var buffer = [UInt8](repeating: 0, count: 65536)
-            var line = Data()
-            while !line.contains(0x0A) {
-                let count = read(connection, &buffer, buffer.count)
-                guard count > 0 else { break }
-                line.append(contentsOf: buffer[0 ..< count])
-            }
-            self?.captured = line
-            let out = Array((reply + "\n").utf8)
-            _ = out.withUnsafeBytes { write(connection, $0.baseAddress, $0.count) }
-            self?.done.signal()
-        }
-        worker.stackSize = 1 << 20
-        worker.start()
+    struct Request {
+        let operation: String
+        let payload: Data
     }
 
-    func requestLine() -> Data {
-        done.wait()
-        return captured
+    private final class Capture: @unchecked Sendable {
+        private let lock = NSLock()
+        private var request: Request?
+        private let done = DispatchSemaphore(value: 0)
+
+        func record(_ request: Request) {
+            lock.withLock { self.request = request }
+            done.signal()
+        }
+
+        func value() throws -> Request {
+            done.wait()
+            return try #require(lock.withLock { request })
+        }
+    }
+
+    let path: String
+    private let directory: URL
+    private let server: SocketServer
+    private let capture: Capture
+
+    init(reply: String) throws {
+        directory = FileManager.default.temporaryDirectory
+            .appending(component: "ck-\(UInt32.random(in: 0 ..< UInt32.max))", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        path = directory.appending(component: "s.sock").path()
+        let response = Data(reply.utf8)
+        let capture = Capture()
+        self.capture = capture
+        server = SocketServer(
+            path: path,
+            build: SynckitClient.build,
+            configuration: .init(maximumFrameBytes: SynckitClient.maximumFrameBytes),
+            trust: .sameEffectiveUser
+        ) { request in
+            capture.record(Request(operation: request.operation, payload: request.payload))
+            return .terminal(SocketTerminal(payload: response))
+        }
+        try server.start()
+    }
+
+    func request() throws -> Request {
+        try capture.value()
     }
 
     deinit {
-        close(listener)
-        try? FileManager.default.removeItem(atPath: path)
+        server.stop()
+        try? FileManager.default.removeItem(at: directory)
     }
 }
 
@@ -76,7 +70,7 @@ private let params = SynckitConsentParams(
     localOnly: false
 )
 
-@Test func consentRequestRoundTripsTheFrozenWireShape() async throws {
+@Test func consentRequestUsesExactPersistentWireShape() async throws {
     let server = try OneShotServer(reply: """
     {"ok":true,"result":{"verdict":"approved","approved_by":"studio","routed":true,"cached":false,\
     "attestation":{"key_id":"kid","sig":"c2ln","signed_by":"studio"}}}
@@ -91,7 +85,9 @@ private let params = SynckitConsentParams(
     #expect(attestation.sig == "c2ln")
     #expect(attestation.signedBy == "studio")
 
-    let sent = try JSONSerialization.jsonObject(with: server.requestLine()) as? [String: Any]
+    let request = try server.request()
+    #expect(request.operation == SynckitClient.operation)
+    let sent = try JSONSerialization.jsonObject(with: request.payload) as? [String: Any]
     #expect(sent?["method"] as? String == "consent.request")
     let sentParams = try #require(sent?["params"] as? [String: Any])
     #expect(sentParams["client"] as? String == "cc-sudo")
@@ -182,5 +178,38 @@ private func consent(reply: String, selfIdentity: String = "laptop") async throw
 @Test func unknownVerdictIsFatal() async throws {
     await #expect(throws: ConsentError.self) {
         _ = try await consent(reply: #"{"ok":true,"result":{"verdict":"maybe"}}"#)
+    }
+}
+
+@Test func rootBridgeRunsThePinnedVerifierAsTheSocketOwner() async throws {
+    let runner = FakeRunner { _, _ in
+        .exit(0, stdout: """
+        {"verdict":"approved","routed":true,
+        "attestation":{"key_id":"kid","sig":"c2ln","signed_by":"studio"}}
+        """)
+    }
+    let bridge = SynckitBridgeClient(socketPath: "/Users/alice/.config/synckit/rpc.sock", userID: 501, runner: runner)
+
+    let result = try await bridge.requestConsent(params)
+
+    #expect(result.verdict == "approved")
+    let spawn = try #require(runner.spawns.first)
+    #expect(spawn.executable == "/usr/bin/sudo")
+    #expect(spawn.arguments == [
+        "-u", "#501", "-H", RunClient.verifierPath,
+        "synckit-bridge", "--socket", "/Users/alice/.config/synckit/rpc.sock",
+    ])
+    let bridged = try JSONDecoder().decode(SynckitConsentParams.self, from: #require(spawn.stdin))
+    #expect(bridged.client == params.client)
+    #expect(bridged.argv == params.argv)
+    #expect(bridged.nonce == params.nonce)
+}
+
+@Test func bridgeTransportFailureIsUnavailable() async throws {
+    let runner = FakeRunner { _, _ in .exit(2, stderr: "connect failed") }
+    let bridge = SynckitBridgeClient(socketPath: "/tmp/missing.sock", userID: 501, runner: runner)
+
+    await #expect(throws: SynckitClient.ClientError.self) {
+        _ = try await bridge.requestConsent(params)
     }
 }

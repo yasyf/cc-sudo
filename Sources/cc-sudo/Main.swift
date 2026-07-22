@@ -15,7 +15,7 @@ struct Root: AsyncParsableCommand {
         version: Version.current,
         subcommands: [
             Run.self, Exec.self, MCP.self, Install.self, Trust.self,
-            Uninstall.self, DoctorCommand.self, Hello.self,
+            Uninstall.self, DoctorCommand.self, SynckitBridge.self, Hello.self,
         ]
     )
 }
@@ -180,6 +180,38 @@ struct DoctorCommand: AsyncParsableCommand {
         }
         if results.contains(where: { $0.status == .fail }) {
             Foundation.exit(1)
+        }
+    }
+}
+
+struct SynckitBridge: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "synckit-bridge",
+        abstract: "User-side synckit transport (internal).",
+        shouldDisplay: false
+    )
+
+    @Option(help: "The invoking user's synckitd socket.")
+    var socket: String
+
+    func run() async throws {
+        guard geteuid() != 0 else {
+            throw ValidationError("synckit-bridge must run as the invoking user")
+        }
+        do {
+            let input = FileHandle.standardInput.readDataToEndOfFile()
+            let params = try JSONDecoder().decode(SynckitConsentParams.self, from: input)
+            let result = try await SynckitClient(socketPath: socket).requestConsent(params)
+            try FileHandle.standardOutput.write(JSONEncoder().encode(result))
+            FileHandle.standardOutput.write(Data("\n".utf8))
+        } catch let error as SynckitClient.ClientError {
+            FileHandle.standardError.write(Data("\(error)\n".utf8))
+            switch error {
+            case .unavailable, .deadlineExceeded:
+                Foundation.exit(2)
+            case .protocolViolation, .rpc:
+                Foundation.exit(3)
+            }
         }
     }
 }

@@ -20,12 +20,14 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk", from: "0.12.1"),
         .package(url: "https://github.com/yasyf/authkit", from: "0.1.0"),
+        .package(url: "https://github.com/yasyf/daemonkit", exact: "0.3.2"),
     ],
     targets: [
         .target(
             name: "CCSudo",
             dependencies: [
                 .product(name: "AuthKit", package: "authkit"),
+                .product(name: "DaemonKit", package: "daemonkit"),
                 .product(name: "MCP", package: "swift-sdk"),
             ]
         ),
@@ -36,6 +38,12 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
-        .testTarget(name: "CCSudoTests", dependencies: ["CCSudo"]),
+        .testTarget(
+            name: "CCSudoTests",
+            dependencies: [
+                "CCSudo",
+                .product(name: "DaemonKit", package: "daemonkit"),
+            ]
+        ),
     ]
 )

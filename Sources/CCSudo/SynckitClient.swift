@@ -1,12 +1,8 @@
+import DaemonKit
 import Foundation
-import os
 
-/// An ndjson unix-socket client for synckitd's frozen consent wire contract:
-/// one `{"method":…,"params":…}` line out, one `{"ok":…}` line back. The read
-/// deadline is 11 minutes — synckitd's rpc.DispatchTimeout is 10, and a human
-/// may sit on the Touch ID sheet for most of it.
-/// The consent.request params of the frozen wire contract.
-public struct SynckitConsentParams: Encodable, Sendable {
+/// The consent.request params of synckit's exact v1 RPC contract.
+public struct SynckitConsentParams: Codable, Sendable {
     public let client: String
     public let reason: String
     public let subject: String
@@ -27,7 +23,7 @@ public struct SynckitConsentParams: Encodable, Sendable {
 }
 
 /// The attestation extension of an approved consent result.
-public struct SynckitAttestation: Decodable, Sendable {
+public struct SynckitAttestation: Codable, Sendable {
     public let keyID: String
     public let sig: String
     public let signedBy: String
@@ -40,7 +36,7 @@ public struct SynckitAttestation: Decodable, Sendable {
 }
 
 /// The consent.request result payload.
-public struct SynckitConsentResult: Decodable, Sendable {
+public struct SynckitConsentResult: Codable, Sendable {
     public let verdict: String
     public let approvedBy: String?
     public let routed: Bool?
@@ -71,16 +67,36 @@ struct SynckitReply: Decodable {
     }
 }
 
-public struct SynckitClient: Sendable {
-    public enum ClientError: Error, Sendable {
-        case socketUnavailable(path: String, errno: Int32)
-        case writeFailed(errno: Int32)
-        case readFailed(errno: Int32)
+/// A source of signed consent results from synckit.
+public protocol SynckitConsentClient: Sendable {
+    func requestConsent(_ params: SynckitConsentParams) async throws -> SynckitConsentResult
+}
+
+/// An exact persistent DaemonKit v1 client for synckit's local RPC service.
+public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
+    public enum ClientError: Error, Sendable, CustomStringConvertible {
+        case unavailable(String)
         case deadlineExceeded
-        case malformedReply(String)
+        case protocolViolation(String)
         case rpc(String)
+
+        public var description: String {
+            switch self {
+            case let .unavailable(detail):
+                "synckitd unavailable: \(detail)"
+            case .deadlineExceeded:
+                "synckitd consent deadline exceeded"
+            case let .protocolViolation(detail):
+                "synckitd protocol violation: \(detail)"
+            case let .rpc(detail):
+                "synckitd RPC failed: \(detail)"
+            }
+        }
     }
 
+    public static let build = "synckit.rpc.v1"
+    public static let operation = "synckit.rpc.call"
+    public static let maximumFrameBytes = 16 * 1024 * 1024
     public static let readDeadline: TimeInterval = 11 * 60
 
     /// The consent socket for a user: ~/.config/synckit/rpc.sock under their
@@ -92,110 +108,174 @@ public struct SynckitClient: Sendable {
     public let socketPath: String
     let deadline: TimeInterval
 
+    private let lock = NSLock()
+    private var session: SocketClient?
+
     public init(socketPath: String, deadline: TimeInterval = SynckitClient.readDeadline) {
         self.socketPath = socketPath
         self.deadline = deadline
     }
 
-    /// Sends one consent.request and returns the parsed result. Blocking I/O
-    /// runs off the cooperative pool.
+    deinit {
+        session?.close()
+    }
+
+    /// Sends one consent.request and returns its signed result.
     public func requestConsent(_ params: SynckitConsentParams) async throws -> SynckitConsentResult {
-        let line = try JSONEncoder().encode(SynckitEnvelope(method: "consent.request", params: params))
-        let replyLine = try await Task.detached { [socketPath, deadline] in
-            try Self.roundTrip(line: line, socketPath: socketPath, deadline: deadline)
-        }.value
+        let payload: Data
+        do {
+            payload = try JSONEncoder().encode(SynckitEnvelope(method: "consent.request", params: params))
+        } catch {
+            throw ClientError.protocolViolation("encode request: \(error)")
+        }
+
+        let client: SocketClient
+        do {
+            client = try currentSession()
+        } catch {
+            throw Self.classify(error)
+        }
+
+        let terminal: SocketTerminal
+        do {
+            terminal = try await client.call(
+                operation: Self.operation,
+                payload: payload,
+                deadline: Date().addingTimeInterval(deadline)
+            )
+        } catch {
+            retire(client)
+            throw Self.classify(error)
+        }
+
+        if terminal.rejected {
+            throw ClientError.protocolViolation(terminal.reason ?? "request rejected without a reason")
+        }
+        if let error = terminal.error {
+            if error == "context deadline exceeded" {
+                throw ClientError.deadlineExceeded
+            }
+            throw ClientError.rpc(error)
+        }
+        guard let responsePayload = terminal.payload else {
+            throw ClientError.protocolViolation("response carried no payload")
+        }
+
         let reply: SynckitReply
         do {
-            reply = try JSONDecoder().decode(SynckitReply.self, from: replyLine)
+            reply = try JSONDecoder().decode(SynckitReply.self, from: responsePayload)
         } catch {
-            throw ClientError.malformedReply(replyLine.prefix(256).utf8Lossy)
+            throw ClientError.protocolViolation("decode response: \(error)")
         }
         guard reply.accepted else {
-            throw ClientError.rpc(reply.error ?? "unspecified rpc error")
+            throw ClientError.rpc(reply.error ?? "unspecified RPC error")
         }
         guard let result = reply.result else {
-            throw ClientError.malformedReply("ok reply carried no result")
+            throw ClientError.protocolViolation("successful response carried no result")
         }
         return result
     }
 
-    /// Quick reachability probe for doctor: can the socket be connected at all?
+    /// Performs the exact DaemonKit handshake without dispatching a request.
     public func probe() -> Bool {
-        guard let descriptor = try? Self.connect(socketPath: socketPath, deadline: 2) else { return false }
-        close(descriptor)
-        return true
+        do {
+            _ = try currentSession()
+            return true
+        } catch {
+            return false
+        }
     }
 
-    static func connect(socketPath: String, deadline: TimeInterval) throws -> Int32 {
-        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard descriptor >= 0 else {
-            throw ClientError.socketUnavailable(path: socketPath, errno: errno)
-        }
-
-        var timeout = timeval(
-            tv_sec: Int(deadline),
-            tv_usec: Int32((deadline - deadline.rounded(.down)) * 1_000_000)
-        )
-        setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let pathBytes = Array(socketPath.utf8)
-        let capacity = MemoryLayout.size(ofValue: address.sun_path) - 1
-        guard pathBytes.count <= capacity else {
-            close(descriptor)
-            throw ClientError.socketUnavailable(path: socketPath, errno: ENAMETOOLONG)
-        }
-        withUnsafeMutableBytes(of: &address.sun_path) { raw in
-            raw.copyBytes(from: pathBytes)
-        }
-
-        let connected = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+    private func currentSession() throws -> SocketClient {
+        try lock.withLock {
+            if let session {
+                return session
             }
+            let created = try SocketClient(
+                path: socketPath,
+                build: Self.build,
+                configuration: .init(
+                    maximumFrameBytes: Self.maximumFrameBytes,
+                    handshakeTimeout: min(deadline, 10),
+                    writeTimeout: min(deadline, 10)
+                ),
+                trust: .sameEffectiveUser
+            )
+            session = created
+            return created
         }
-        guard connected == 0 else {
-            let savedErrno = errno
-            close(descriptor)
-            throw ClientError.socketUnavailable(path: socketPath, errno: savedErrno)
-        }
-        return descriptor
     }
 
-    static func roundTrip(line: Data, socketPath: String, deadline: TimeInterval) throws -> Data {
-        let descriptor = try connect(socketPath: socketPath, deadline: deadline)
-        defer { close(descriptor) }
-
-        var outgoing = line
-        outgoing.append(0x0A)
-        try outgoing.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            var remaining = raw
-            while !remaining.isEmpty {
-                let written = write(descriptor, remaining.baseAddress, remaining.count)
-                guard written > 0 else { throw ClientError.writeFailed(errno: errno) }
-                remaining = UnsafeRawBufferPointer(rebasing: remaining.dropFirst(written))
-            }
+    private func retire(_ failed: SocketClient) {
+        let retired = lock.withLock { () -> SocketClient? in
+            guard session === failed else { return nil }
+            session = nil
+            return failed
         }
+        retired?.close()
+    }
 
-        var reply = Data()
-        var buffer = [UInt8](repeating: 0, count: 4096)
-        while true {
-            let count = read(descriptor, &buffer, buffer.count)
-            if count > 0 {
-                reply.append(contentsOf: buffer[0 ..< count])
-                if let newline = reply.firstIndex(of: 0x0A) {
-                    return reply.prefix(upTo: newline)
-                }
-            } else if count == 0 {
-                guard reply.isEmpty else { return reply }
-                throw ClientError.malformedReply("connection closed before a reply line")
-            } else if errno == EAGAIN || errno == EWOULDBLOCK {
-                throw ClientError.deadlineExceeded
-            } else {
-                throw ClientError.readFailed(errno: errno)
+    private static func classify(_ error: any Error) -> ClientError {
+        guard let transport = error as? SessionTransportError else {
+            return .protocolViolation(String(describing: error))
+        }
+        switch transport {
+        case let .systemCall(operation, number):
+            return .unavailable("\(operation) failed with errno \(number)")
+        case .disconnected:
+            return .unavailable("session disconnected")
+        case .truncatedFrame, .frameTooLarge, .invalidFrame, .unsupportedProtocolVersion,
+             .handshake, .duplicateRequestID, .streamSequence, .cancellationDidNotSettle:
+            return .protocolViolation(String(describing: transport))
+        }
+    }
+}
+
+struct SynckitBridgeClient: SynckitConsentClient {
+    static let sudo = "/usr/bin/sudo"
+
+    let socketPath: String
+    let userID: uid_t?
+    let runner: any ProcessRunner
+
+    init(socketPath: String, userID: uid_t?, runner: any ProcessRunner = LiveProcessRunner()) {
+        self.socketPath = socketPath
+        self.userID = userID
+        self.runner = runner
+    }
+
+    func requestConsent(_ params: SynckitConsentParams) async throws -> SynckitConsentResult {
+        guard let userID else {
+            throw SynckitClient.ClientError.unavailable("no invoking user")
+        }
+        let input = try JSONEncoder().encode(params)
+        let response: SubprocessResult
+        do {
+            response = try await runner.run(
+                executable: Self.sudo,
+                arguments: [
+                    "-u", "#\(userID)", "-H", RunClient.verifierPath,
+                    "synckit-bridge", "--socket", socketPath,
+                ],
+                stdin: input,
+                environment: nil
+            )
+        } catch {
+            throw SynckitClient.ClientError.unavailable("bridge launch failed: \(error)")
+        }
+        switch response.exitCode {
+        case 0:
+            do {
+                return try JSONDecoder().decode(SynckitConsentResult.self, from: response.stdout)
+            } catch {
+                throw SynckitClient.ClientError.protocolViolation("bridge response: \(error)")
             }
+        case 2:
+            throw SynckitClient.ClientError.unavailable(response.stderr.utf8Lossy)
+        default:
+            throw SynckitClient.ClientError.protocolViolation(
+                "bridge exited \(response.exitCode): \(response.stderr.utf8Lossy)"
+            )
         }
     }
 }

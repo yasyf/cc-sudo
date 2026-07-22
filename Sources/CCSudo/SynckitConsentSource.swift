@@ -12,13 +12,13 @@ import os
 public struct SynckitConsentSource: ConsentSource {
     static let clientName = "cc-sudo"
 
-    let client: SynckitClient
+    let client: any SynckitConsentClient
     /// The mesh name synckitd advertises for THIS host (engine `Self`); a
     /// local, non-routed approval comes back signed_by that name and verifies
     /// against the self key.
     let selfIdentity: String
 
-    public init(client: SynckitClient, selfIdentity: String) {
+    public init(client: any SynckitConsentClient, selfIdentity: String) {
         self.client = client
         self.selfIdentity = selfIdentity
     }
@@ -41,9 +41,9 @@ public struct SynckitConsentSource: ConsentSource {
             // upstream); a live daemon answering an RPC error is fatal — the
             // engine contract says a fatal local prompt never routes.
             switch error {
-            case .socketUnavailable, .deadlineExceeded:
+            case .unavailable, .deadlineExceeded:
                 throw ConsentError.unavailable(String(describing: error))
-            case .rpc, .malformedReply, .readFailed, .writeFailed:
+            case .rpc, .protocolViolation:
                 throw ConsentError.malformedResponse(String(describing: error))
             }
         }

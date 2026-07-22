@@ -54,7 +54,10 @@ public extension Verifier.Dependencies {
             pinHelper: { try HelperTrust.stagedHelperBinary() },
             consentSource: { pinnedHelper in
                 let synckit = SynckitConsentSource(
-                    client: SynckitClient(socketPath: liveSocketPath()),
+                    client: SynckitBridgeClient(
+                        socketPath: liveSocketPath(),
+                        userID: liveSocketUserID()
+                    ),
                     selfIdentity: (try? OriginIdentity.read()) ?? OriginIdentity.defaultIdentity()
                 )
                 switch PromptStrategy.select() {
@@ -81,5 +84,12 @@ public extension Verifier.Dependencies {
             return "/var/empty/.config/synckit/rpc.sock"
         }
         return SynckitClient.socketPath(home: home)
+    }
+
+    internal static func liveSocketUserID() -> uid_t? {
+        if let console = ConsoleUser.current(), console.homeDirectory != nil {
+            return console.uid
+        }
+        return PromptStrategy.sudoInvokerUID()
     }
 }
