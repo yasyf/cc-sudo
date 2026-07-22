@@ -20,7 +20,7 @@ private final class OneShotServer: @unchecked Sendable {
         }
 
         func value() throws -> Request {
-            done.wait()
+            try #require(done.wait(timeout: .now() + 5) == .success)
             return try #require(lock.withLock { request })
         }
     }
