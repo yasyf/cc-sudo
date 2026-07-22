@@ -117,7 +117,7 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
     }
 
     deinit {
-        session?.close()
+        close()
     }
 
     /// Sends one consent.request and returns its signed result.
@@ -184,6 +184,15 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
         } catch {
             return false
         }
+    }
+
+    /// Closes the persistent session and lets a later call reconnect.
+    public func close() {
+        let active = lock.withLock { () -> SocketClient? in
+            defer { session = nil }
+            return session
+        }
+        active?.close()
     }
 
     private func currentSession() throws -> SocketClient {
