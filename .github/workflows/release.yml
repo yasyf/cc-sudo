@@ -9,5 +9,5 @@ permissions:
 
 jobs:
   release:
-    uses: yasyf/homebrew-tap/.github/workflows/release-swift.yml@8f422c652d836c40f9cc5a9d893d4120b26bc681
+    uses: yasyf/homebrew-tap/.github/workflows/release-swift.yml@83ee384b1d4fe25a8e4aa7258bb76d55e1593735
     secrets: inherit
