@@ -53,7 +53,7 @@ private final class OneShotServer: @unchecked Sendable {
         configuration.maximumSessions = 1
         server = SocketServer(
             path: path,
-            build: SynckitClient.build,
+            wireBuild: SynckitClient.wireBuild,
             configuration: configuration,
             trust: .sameEffectiveUser
         ) { request in

@@ -94,7 +94,7 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
         }
     }
 
-    public static let build = "synckit.rpc.v1"
+    public static let wireBuild = "synckit.rpc.v1"
     public static let operation = "synckit.rpc.call"
     public static let maximumFrameBytes = 16 * 1024 * 1024
     public static let readDeadline: TimeInterval = 11 * 60
@@ -236,7 +236,7 @@ private actor SynckitSession {
             let task = Task<SocketClient, Error> {
                 try await SocketClient(
                     path: socketPath,
-                    build: SynckitClient.build,
+                    wireBuild: SynckitClient.wireBuild,
                     configuration: .init(
                         maximumFrameBytes: SynckitClient.maximumFrameBytes,
                         handshakeTimeout: min(deadline, 10),
