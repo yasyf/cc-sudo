@@ -255,7 +255,7 @@ private actor SynckitSession {
             return
         }
         state = .idle
-        await failed.abort()
+        failed.abort()
     }
 
     func close() async {
@@ -279,11 +279,11 @@ private actor SynckitSession {
         state = .idle
         switch previous {
         case let .ready(client):
-            await client.abort()
+            client.abort()
         case let .connecting(_, task):
             task.cancel()
             if case let .success(client) = await task.result {
-                await client.abort()
+                client.abort()
             }
         case .idle:
             break
