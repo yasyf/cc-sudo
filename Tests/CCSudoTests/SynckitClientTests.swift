@@ -4,26 +4,33 @@ import Foundation
 import Testing
 
 private final class OneShotServer: @unchecked Sendable {
-    private static let teardownQueue = DispatchQueue(label: "com.yasyf.cc-sudo.synckit-test-teardown")
+    private enum RequestWaitError: Error {
+        case timedOut
+    }
 
-    struct Request {
+    struct Request: Sendable {
         let operation: String
         let payload: Data
     }
 
-    private final class Capture: @unchecked Sendable {
-        private let lock = NSLock()
+    private actor Capture {
         private var request: Request?
-        private let done = DispatchSemaphore(value: 0)
+        private var waiters: [CheckedContinuation<Request, Never>] = []
 
         func record(_ request: Request) {
-            lock.withLock { self.request = request }
-            done.signal()
+            self.request = request
+            let pending = waiters
+            waiters.removeAll()
+            for waiter in pending {
+                waiter.resume(returning: request)
+            }
         }
 
-        func value() throws -> Request {
-            try #require(done.wait(timeout: .now() + 5) == .success)
-            return try #require(lock.withLock { request })
+        func value() async -> Request {
+            if let request {
+                return request
+            }
+            return await withCheckedContinuation { waiters.append($0) }
         }
     }
 
@@ -32,7 +39,7 @@ private final class OneShotServer: @unchecked Sendable {
     private let server: SocketServer
     private let capture: Capture
 
-    init(reply: String) throws {
+    init(reply: String) async throws {
         directory = FileManager.default.temporaryDirectory
             .appending(component: "ck-\(UInt32.random(in: 0 ..< UInt32.max))", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
@@ -40,36 +47,52 @@ private final class OneShotServer: @unchecked Sendable {
         let response = Data(reply.utf8)
         let capture = Capture()
         self.capture = capture
+        var configuration = SocketServer.Configuration(
+            maximumFrameBytes: SynckitClient.maximumFrameBytes
+        )
+        configuration.maximumSessions = 1
         server = SocketServer(
             path: path,
             build: SynckitClient.build,
-            configuration: .init(maximumFrameBytes: SynckitClient.maximumFrameBytes),
+            configuration: configuration,
             trust: .sameEffectiveUser
         ) { request in
-            capture.record(Request(operation: request.operation, payload: request.payload))
+            await capture.record(Request(operation: request.operation, payload: request.payload))
             return .terminal(SocketTerminal(payload: response))
         }
-        try server.start()
+        try await server.start()
     }
 
-    func request() throws -> Request {
-        try capture.value()
+    func request() async throws -> Request {
+        try await withThrowingTaskGroup(of: Request.self) { group in
+            group.addTask { await self.capture.value() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(5))
+                throw RequestWaitError.timedOut
+            }
+            let request = try await #require(group.next())
+            group.cancelAll()
+            return request
+        }
     }
 
     func close() async {
-        let server = server
-        let directory = directory
-        await withCheckedContinuation { continuation in
-            Self.teardownQueue.async {
-                Self.settle(server: server, directory: directory)
-                continuation.resume()
-            }
-        }
-    }
-
-    private static func settle(server: SocketServer, directory: URL) {
-        server.stop()
+        await server.stop()
         try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+private func withSynckitClient<Result>(
+    _ client: SynckitClient,
+    body: (SynckitClient) async throws -> Result
+) async throws -> Result {
+    do {
+        let result = try await body(client)
+        await client.close()
+        return result
+    } catch {
+        await client.close()
+        throw error
     }
 }
 
@@ -77,15 +100,15 @@ private func withOneShotServer<Result>(
     reply: String,
     body: (SynckitClient, OneShotServer) async throws -> Result
 ) async throws -> Result {
-    let server = try OneShotServer(reply: reply)
+    let server = try await OneShotServer(reply: reply)
     let client = SynckitClient(socketPath: server.path, deadline: 30)
     do {
         let result = try await body(client, server)
-        client.close()
+        await client.close()
         await server.close()
         return result
     } catch {
-        client.close()
+        await client.close()
         await server.close()
         throw error
     }
@@ -117,7 +140,7 @@ struct SynckitClientTests {
             #expect(attestation.sig == "c2ln")
             #expect(attestation.signedBy == "studio")
 
-            let request = try server.request()
+            let request = try await server.request()
             #expect(request.operation == SynckitClient.operation)
             let sent = try JSONSerialization.jsonObject(with: request.payload) as? [String: Any]
             #expect(sent?["method"] as? String == "consent.request")
@@ -138,20 +161,34 @@ struct SynckitClientTests {
         }
     }
 
+    @Test func concurrentRequestsCoalesceConnectionSetup() async throws {
+        try await withOneShotServer(reply: #"{"ok":true,"result":{"verdict":"approved"}}"#) { client, _ in
+            async let first = client.requestConsent(params)
+            async let second = client.requestConsent(params)
+            let firstResult = try await first
+            let secondResult = try await second
+            #expect(firstResult.verdict == "approved")
+            #expect(secondResult.verdict == "approved")
+        }
+    }
+
     @Test func missingSocketIsUnavailableUpstream() async throws {
         let client = SynckitClient(socketPath: "/nonexistent/rpc.sock", deadline: 1)
-        defer { client.close() }
-        let source = SynckitConsentSource(
-            client: client,
-            selfIdentity: "laptop"
-        )
-        do {
-            _ = try await source.obtainSignature(ConsentRequest(argv: ["ls"], nonce: Data(repeating: 1, count: 24)))
-            Issue.record("expected unavailable")
-        } catch let error as ConsentError {
-            guard case .unavailable = error else {
-                Issue.record("want unavailable, got \(error)")
-                return
+        try await withSynckitClient(client) { client in
+            let source = SynckitConsentSource(
+                client: client,
+                selfIdentity: "laptop"
+            )
+            do {
+                _ = try await source.obtainSignature(
+                    ConsentRequest(argv: ["ls"], nonce: Data(repeating: 1, count: 24))
+                )
+                Issue.record("expected unavailable")
+            } catch let error as ConsentError {
+                guard case .unavailable = error else {
+                    Issue.record("want unavailable, got \(error)")
+                    return
+                }
             }
         }
     }

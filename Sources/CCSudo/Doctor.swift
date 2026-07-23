@@ -34,7 +34,7 @@ public struct Doctor: Sendable {
         await results.append(verifierCheck())
         await results.append(sudoersCheck())
         results.append(helperPinCheck())
-        results.append(synckitCheck())
+        await results.append(synckitCheck())
         results.append(selfKeyCheck())
         results.append(peerKeysCheck())
         results.append(originIdentityCheck())
@@ -98,7 +98,7 @@ public struct Doctor: Sendable {
         }
     }
 
-    func synckitCheck() -> CheckResult {
+    func synckitCheck() async -> CheckResult {
         guard let home = PromptStrategy.socketHome(
             console: ConsoleUser.current(),
             invokerUID: PromptStrategy.sudoInvokerUID() ?? getuid()
@@ -106,7 +106,7 @@ public struct Doctor: Sendable {
             return CheckResult(name: "synckitd", status: .warn, detail: "no user to resolve a socket for")
         }
         let path = SynckitClient.socketPath(home: home)
-        let reachable = SynckitClient(socketPath: path).probe()
+        let reachable = await SynckitClient(socketPath: path).probe()
         return CheckResult(
             name: "synckitd",
             status: reachable ? .pass : .warn,

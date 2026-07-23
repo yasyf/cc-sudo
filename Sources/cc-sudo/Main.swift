@@ -201,7 +201,15 @@ struct SynckitBridge: AsyncParsableCommand {
         do {
             let input = FileHandle.standardInput.readDataToEndOfFile()
             let params = try JSONDecoder().decode(SynckitConsentParams.self, from: input)
-            let result = try await SynckitClient(socketPath: socket).requestConsent(params)
+            let client = SynckitClient(socketPath: socket)
+            let result: SynckitConsentResult
+            do {
+                result = try await client.requestConsent(params)
+            } catch {
+                await client.close()
+                throw error
+            }
+            await client.close()
             try FileHandle.standardOutput.write(JSONEncoder().encode(result))
             FileHandle.standardOutput.write(Data("\n".utf8))
         } catch let error as SynckitClient.ClientError {

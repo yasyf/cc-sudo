@@ -108,8 +108,7 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
     public let socketPath: String
     let deadline: TimeInterval
 
-    private let lock = NSLock()
-    private var session: SocketClient?
+    private let session = SynckitSession()
 
     public init(socketPath: String, deadline: TimeInterval = SynckitClient.readDeadline) {
         self.socketPath = socketPath
@@ -117,21 +116,18 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
     }
 
     deinit {
-        close()
+        let session = session
+        Task { await session.abort() }
     }
 
     /// Sends one consent.request and returns its signed result.
     public func requestConsent(_ params: SynckitConsentParams) async throws -> SynckitConsentResult {
-        let payload: Data
-        do {
-            payload = try JSONEncoder().encode(SynckitEnvelope(method: "consent.request", params: params))
-        } catch {
-            throw ClientError.protocolViolation("encode request: \(error)")
-        }
-
+        let payload = try Self.encode(params)
         let client: SocketClient
         do {
-            client = try currentSession()
+            client = try await session.current(socketPath: socketPath, deadline: deadline)
+        } catch let error as CancellationError {
+            throw error
         } catch {
             throw Self.classify(error)
         }
@@ -143,11 +139,24 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
                 payload: payload,
                 deadline: Date().addingTimeInterval(deadline)
             )
+        } catch let error as CancellationError {
+            throw error
         } catch {
-            retire(client)
+            await session.retire(client)
             throw Self.classify(error)
         }
+        return try Self.decode(terminal)
+    }
 
+    private static func encode(_ params: SynckitConsentParams) throws -> Data {
+        do {
+            return try JSONEncoder().encode(SynckitEnvelope(method: "consent.request", params: params))
+        } catch {
+            throw ClientError.protocolViolation("encode request: \(error)")
+        }
+    }
+
+    private static func decode(_ terminal: SocketTerminal) throws -> SynckitConsentResult {
         if terminal.rejected {
             throw ClientError.protocolViolation(terminal.reason ?? "request rejected without a reason")
         }
@@ -177,9 +186,9 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
     }
 
     /// Performs the exact DaemonKit handshake without dispatching a request.
-    public func probe() -> Bool {
+    public func probe() async -> Bool {
         do {
-            _ = try currentSession()
+            _ = try await session.current(socketPath: socketPath, deadline: deadline)
             return true
         } catch {
             return false
@@ -187,41 +196,8 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
     }
 
     /// Closes the persistent session and lets a later call reconnect.
-    public func close() {
-        let active = lock.withLock { () -> SocketClient? in
-            defer { session = nil }
-            return session
-        }
-        active?.close()
-    }
-
-    private func currentSession() throws -> SocketClient {
-        try lock.withLock {
-            if let session {
-                return session
-            }
-            let created = try SocketClient(
-                path: socketPath,
-                build: Self.build,
-                configuration: .init(
-                    maximumFrameBytes: Self.maximumFrameBytes,
-                    handshakeTimeout: min(deadline, 10),
-                    writeTimeout: min(deadline, 10)
-                ),
-                trust: .sameEffectiveUser
-            )
-            session = created
-            return created
-        }
-    }
-
-    private func retire(_ failed: SocketClient) {
-        let retired = lock.withLock { () -> SocketClient? in
-            guard session === failed else { return nil }
-            session = nil
-            return failed
-        }
-        retired?.close()
+    public func close() async {
+        await session.close()
     }
 
     private static func classify(_ error: any Error) -> ClientError {
@@ -236,6 +212,105 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
         case .truncatedFrame, .frameTooLarge, .invalidFrame, .unsupportedProtocolVersion,
              .handshake, .duplicateRequestID, .streamSequence, .cancellationDidNotSettle:
             return .protocolViolation(String(describing: transport))
+        }
+    }
+}
+
+private actor SynckitSession {
+    private enum State {
+        case idle
+        case connecting(UUID, Task<SocketClient, Error>)
+        case ready(SocketClient)
+    }
+
+    private var state = State.idle
+
+    func current(socketPath: String, deadline: TimeInterval) async throws -> SocketClient {
+        switch state {
+        case let .ready(client):
+            return client
+        case let .connecting(id, task):
+            return try await finishConnection(id: id, task: task)
+        case .idle:
+            let id = UUID()
+            let task = Task<SocketClient, Error> {
+                try await SocketClient(
+                    path: socketPath,
+                    build: SynckitClient.build,
+                    configuration: .init(
+                        maximumFrameBytes: SynckitClient.maximumFrameBytes,
+                        handshakeTimeout: min(deadline, 10),
+                        writeTimeout: min(deadline, 10)
+                    ),
+                    trust: .sameEffectiveUser
+                )
+            }
+            state = .connecting(id, task)
+            return try await finishConnection(id: id, task: task)
+        }
+    }
+
+    func retire(_ failed: SocketClient) async {
+        guard case let .ready(active) = state, active === failed else {
+            return
+        }
+        state = .idle
+        await failed.abort()
+    }
+
+    func close() async {
+        let previous = state
+        state = .idle
+        switch previous {
+        case let .ready(client):
+            await client.close()
+        case let .connecting(_, task):
+            task.cancel()
+            if case let .success(client) = await task.result {
+                await client.close()
+            }
+        case .idle:
+            break
+        }
+    }
+
+    func abort() async {
+        let previous = state
+        state = .idle
+        switch previous {
+        case let .ready(client):
+            await client.abort()
+        case let .connecting(_, task):
+            task.cancel()
+            if case let .success(client) = await task.result {
+                await client.abort()
+            }
+        case .idle:
+            break
+        }
+    }
+
+    private func finishConnection(
+        id: UUID,
+        task: Task<SocketClient, Error>
+    ) async throws -> SocketClient {
+        do {
+            let opened = try await task.value
+            switch state {
+            case let .connecting(currentID, _) where currentID == id:
+                state = .ready(opened)
+                return opened
+            case let .ready(current) where current === opened:
+                return opened
+            default:
+                await opened.close()
+                throw CancellationError()
+            }
+        } catch {
+            if case let .connecting(currentID, _) = state, currentID == id {
+                state = .idle
+            }
+            throw error
         }
     }
 }
