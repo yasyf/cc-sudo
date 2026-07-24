@@ -25,7 +25,10 @@ jobs:
           fetch-depth: 0
 
       - name: Install cc-notes
-        run: curl -fsSL https://raw.githubusercontent.com/yasyf/cc-notes/main/scripts/install.sh | sh
+        run: |
+          set -o pipefail
+          curl -fsSL --retry 3 --retry-all-errors \
+            https://raw.githubusercontent.com/yasyf/cc-notes/main/scripts/install.sh | sh
 
       # No-op gracefully when there is no remote / nothing to reconcile: the
       # commands already exit 0 on "nothing to do".
