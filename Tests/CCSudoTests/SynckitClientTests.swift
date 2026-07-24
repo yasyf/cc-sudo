@@ -1,5 +1,5 @@
 @testable import CCSudo
-import DaemonKit
+@testable import DaemonKit
 import Foundation
 import Testing
 
@@ -54,8 +54,7 @@ private final class OneShotServer: @unchecked Sendable {
         server = SocketServer(
             path: path,
             wireBuild: SynckitClient.wireBuild,
-            configuration: configuration,
-            trust: .sameEffectiveUser
+            configuration: configuration
         ) { request in
             await capture.record(Request(operation: request.operation, payload: request.payload))
             return .terminal(SocketTerminal(payload: response))

@@ -237,12 +237,12 @@ private actor SynckitSession {
                 try await SocketClient(
                     path: socketPath,
                     wireBuild: SynckitClient.wireBuild,
+                    role: SessionPeerRole.unprotected,
                     configuration: .init(
                         maximumFrameBytes: SynckitClient.maximumFrameBytes,
                         handshakeTimeout: min(deadline, 10),
                         writeTimeout: min(deadline, 10)
-                    ),
-                    trust: .sameEffectiveUser
+                    )
                 )
             }
             state = .connecting(id, task)
