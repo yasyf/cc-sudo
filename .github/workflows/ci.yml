@@ -34,7 +34,11 @@ jobs:
         run: swiftformat --lint .
       - name: Lint
         run: swiftlint --quiet
+      - name: Verify generated version source
+        run: scripts/generate-version.sh --check
       - name: Build
         run: swift build
+      - name: Verify built executable version
+        run: scripts/verify-release-version.sh "$(swift build --show-bin-path)/cc-sudo"
       - name: Test
         run: swift test

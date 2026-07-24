@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-07-24
+
+### Fixed
+- Derive the runtime version from `VERSION` and reject releases whose tag or
+  built executable reports a different version.
+
 ## [0.10.0] - 2026-07-24
 
 ### Changed
@@ -73,7 +79,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial scaffolding: the `CCSudo` library, the `cc-sudo` CLI skeleton with a `hello` smoke command, CI, and the Homebrew cask release pipeline.
 
-[Unreleased]: https://github.com/yasyf/cc-sudo/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/yasyf/cc-sudo/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/yasyf/cc-sudo/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/yasyf/cc-sudo/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/yasyf/cc-sudo/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/yasyf/cc-sudo/compare/v0.7.0...v0.8.0

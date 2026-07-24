@@ -8,6 +8,25 @@ permissions:
   contents: write
 
 jobs:
+  version-contract:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - name: Select Xcode 26
+        run: |
+          set -euo pipefail
+          app="$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' -print | sort -V | tail -1)"
+          test -n "$app"
+          sudo xcode-select -s "$app/Contents/Developer"
+      - name: Verify generated version source
+        run: scripts/generate-version.sh --check
+      - name: Build the release architecture set
+        run: swift build -c release --product cc-sudo --arch arm64 --arch x86_64
+      - name: Verify release tag and built executable version
+        run: |
+          bin="$(swift build -c release --product cc-sudo --arch arm64 --arch x86_64 --show-bin-path)"
+          scripts/verify-release-version.sh "$bin/cc-sudo" "$GITHUB_REF_NAME"
   release:
+    needs: version-contract
     uses: yasyf/homebrew-tap/.github/workflows/release-swift.yml@c9d8821d874a9d5c7c322b6f3ee0aa1c642e3bc4
     secrets: inherit
