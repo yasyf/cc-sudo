@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-23
+
+### Fixed
+- Pin the shared Swift release workflow that preserves the exact signed release bytes and publishes the Homebrew cask from a separate retryable tap-delivery job.
+
 ## [0.6.0] - 2026-07-23
 
 ### Changed
@@ -45,7 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial scaffolding: the `CCSudo` library, the `cc-sudo` CLI skeleton with a `hello` smoke command, CI, and the Homebrew cask release pipeline.
 
-[Unreleased]: https://github.com/yasyf/cc-sudo/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/yasyf/cc-sudo/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/yasyf/cc-sudo/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/yasyf/cc-sudo/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/yasyf/cc-sudo/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/yasyf/cc-sudo/compare/v0.3.1...v0.4.0
