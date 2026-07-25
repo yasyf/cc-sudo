@@ -28,6 +28,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: 1.26.5
+          cache: false
       - name: Install lint tools missing from the image
         # macos-26 ships swiftformat but not swiftlint; guard both against image churn.
         run: |
