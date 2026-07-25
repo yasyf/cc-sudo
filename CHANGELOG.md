@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-07-24
+
+### Changed
+- Pin daemonkit 0.18.0. Its breaking verifier-budget and serve-time self-probe
+  APIs affect Go runtime owners only; cc-sudo's Swift transport API is unchanged.
+
 ## [0.10.1] - 2026-07-24
 
 ### Fixed
@@ -79,7 +85,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial scaffolding: the `CCSudo` library, the `cc-sudo` CLI skeleton with a `hello` smoke command, CI, and the Homebrew cask release pipeline.
 
-[Unreleased]: https://github.com/yasyf/cc-sudo/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/yasyf/cc-sudo/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/yasyf/cc-sudo/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/yasyf/cc-sudo/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/yasyf/cc-sudo/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/yasyf/cc-sudo/compare/v0.8.0...v0.9.0
