@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-07-24
+
+### Fixed
+- Pin daemonkit 0.19.1 and update the internal exact-wire client to synckitd
+  0.35.2's published RPC identity, with a live runtime handshake gate.
+
 ## [0.10.2] - 2026-07-24
 
 ### Changed
@@ -85,7 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial scaffolding: the `CCSudo` library, the `cc-sudo` CLI skeleton with a `hello` smoke command, CI, and the Homebrew cask release pipeline.
 
-[Unreleased]: https://github.com/yasyf/cc-sudo/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/yasyf/cc-sudo/compare/v0.10.3...HEAD
+[0.10.3]: https://github.com/yasyf/cc-sudo/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/yasyf/cc-sudo/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/yasyf/cc-sudo/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/yasyf/cc-sudo/compare/v0.9.0...v0.10.0

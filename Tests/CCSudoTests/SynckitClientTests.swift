@@ -125,6 +125,15 @@ private let params = SynckitConsentParams(
 
 @Suite(.serialized)
 struct SynckitClientTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["CC_SUDO_SYNCKITD_SOCKET"] != nil))
+    func publishedRuntimeHandshakeIsExact() async throws {
+        let socketPath = try #require(ProcessInfo.processInfo.environment["CC_SUDO_SYNCKITD_SOCKET"])
+        #expect(SynckitClient.requiredRuntimeVersion == "0.35.2")
+        try await withSynckitClient(SynckitClient(socketPath: socketPath, deadline: 5)) { client in
+            #expect(await client.probe())
+        }
+    }
+
     @Test func consentRequestUsesExactPersistentWireShape() async throws {
         try await withOneShotServer(reply: """
         {"ok":true,"result":{"verdict":"approved","approved_by":"studio","routed":true,"cached":false,\

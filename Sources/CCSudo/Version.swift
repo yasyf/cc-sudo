@@ -5,5 +5,5 @@
 /// any mismatch with its own value — so a `brew upgrade` that outruns
 /// `cc-sudo install` is a loud, routable error, never a silent skew.
 public enum Version {
-    public static let current = "0.10.2"
+    public static let current = "0.10.3"
 }

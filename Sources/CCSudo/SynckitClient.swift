@@ -94,7 +94,9 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
         }
     }
 
-    public static let wireBuild = "synckit.rpc.v1"
+    public static let requiredRuntimeVersion = "0.35.2"
+    public static let wireBuild =
+        "com.yasyf.synckit.rpc/80574f71afde89fd7be498f813094104a6042dc04fd35bf8e2320de41ebac71c/v1"
     public static let operation = "synckit.rpc.call"
     public static let maximumFrameBytes = 16 * 1024 * 1024
     public static let readDeadline: TimeInterval = 11 * 60
