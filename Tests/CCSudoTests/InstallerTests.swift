@@ -432,3 +432,40 @@ private func fakeSourceBinary(in root: URL) throws -> URL {
     let mode = try #require((attributes[.posixPermissions] as? NSNumber)?.intValue)
     #expect(mode & 0o022 == 0)
 }
+
+@Test func installRejectsASymlinkedAncestorOfTheVerifierDirectory() async throws {
+    let fileManager = FileManager.default
+    let root = try temporaryRoot()
+    let runner = FakeRunner { _, _ in .exit(0) }
+    // The link target passes every per-directory check itself (0o755, no ACL);
+    // only its physical parent is world-writable, so a walk that follows the
+    // link sees nothing wrong and the rejection must come from the link itself.
+    let writableParent = root.appending(component: "writable", directoryHint: .isDirectory)
+    let trustedLookingTarget = writableParent.appending(component: "target", directoryHint: .isDirectory)
+    try fileManager.createDirectory(at: trustedLookingTarget, withIntermediateDirectories: true)
+    try fileManager.setAttributes([.posixPermissions: 0o777], ofItemAtPath: writableParent.path())
+    try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: trustedLookingTarget.path())
+    let library = root.appending(component: "Library")
+    try fileManager.createSymbolicLink(at: library, withDestinationURL: trustedLookingTarget)
+    let source = try fakeSourceBinary(in: root)
+    let bundle = try fakeHelperBundle(in: root)
+    let installer = Installer(runner: runner, root: root, euid: { 0 }, validator: StubCodeSignatureValidator())
+
+    do {
+        _ = try await installer.install(
+            sourceExecutable: source,
+            originIdentity: "laptop",
+            helperBundle: bundle,
+            console: ConsoleUser(name: "yasyf", uid: 501)
+        )
+        Issue.record("a symlinked ancestor must be rejected")
+    } catch let Installer.InstallError.untrustedAncestor(path) {
+        #expect(path == library.path(percentEncoded: false))
+    } catch {
+        Issue.record("unexpected error \(error)")
+    }
+    #expect(!fileManager.fileExists(
+        atPath: trustedLookingTarget.appending(path: "PrivilegedHelperTools/cc-sudo-exec").path()
+    ))
+    #expect(runner.spawns.isEmpty)
+}

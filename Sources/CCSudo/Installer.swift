@@ -108,18 +108,11 @@ public struct Installer: Sendable {
         }
     }
 
-    /// Copies `sourceExecutable` to the root-owned verifier path behind two
-    /// provenance checks against cc-sudo's own designated requirement: the
-    /// SOURCE before the copy, and — critically — the STAGED copy in the
-    /// root-owned directory AFTER the copy but BEFORE promotion. The staged
-    /// bytes are the ones promoted, and the root-owned staging dir cannot be
-    /// swapped, so a source swapped mid-copy is caught. Any signature failure
-    /// aborts before the binary can become the NOPASSWD root verifier.
+    /// Installs `sourceExecutable` as the NOPASSWD verifier: validate, check
+    /// ancestors, stage a regular file in a private 0700 dir, harden, re-validate
+    /// the staged bytes, promote atomically.
     func installVerifier(sourceExecutable: URL) throws {
         let fileManager = FileManager.default
-        // Copy the resolved bytes, never a symlink: the NOPASSWD exec rule
-        // invokes the verifier path, so it must be a root-owned regular copy,
-        // not a link into the user-writable Caskroom.
         let resolved = sourceExecutable.resolvingSymlinksInPath()
         try validator.validate(path: resolved, requirement: verifierRequirement)
         let directory = rooted(Self.verifierDirectory)
@@ -130,9 +123,6 @@ public struct Installer: Sendable {
         )
         let destination = rooted(Self.verifierPath)
         try verifyTrustedAncestors(of: destination.deletingLastPathComponent())
-        // Stage inside a private 0700 root-owned directory the console user
-        // cannot traverse, so it cannot open the staged copy and retain a write
-        // descriptor across hardening, validation, and promotion.
         let privateStaging = directory.appending(component: "cc-sudo-exec.staging", directoryHint: .isDirectory)
         if fileManager.fileExists(atPath: privateStaging.path()) {
             try fileManager.removeItem(at: privateStaging)
@@ -341,8 +331,8 @@ extension Installer {
     /// Whether the path carries any extended ACL, read no-follow. The trusted
     /// ancestor chain is ACL-free, so any extended ACL on an ancestor is treated
     /// as untrusted and fails closed rather than being parsed for a grant.
-    private func hasExtendedACL(at url: URL) -> Bool {
-        guard let acl = url.path().withCString({ acl_get_link_np($0, ACL_TYPE_EXTENDED) }) else {
+    private func hasExtendedACL(at path: String) -> Bool {
+        guard let acl = path.withCString({ acl_get_link_np($0, ACL_TYPE_EXTENDED) }) else {
             return false
         }
         acl_free(UnsafeMutableRawPointer(acl))
@@ -356,21 +346,22 @@ extension Installer {
         let stop = canonicalPath(root)
         var current = leaf
         while true {
+            let path = noFollowPath(current)
             var info = stat()
-            guard lstat(current.path(), &info) == 0 else {
-                throw InstallError.untrustedAncestor(path: current.path())
+            guard lstat(path, &info) == 0 else {
+                throw InstallError.untrustedAncestor(path: path)
             }
             guard (info.st_mode & S_IFMT) == S_IFDIR else {
-                throw InstallError.untrustedAncestor(path: current.path())
+                throw InstallError.untrustedAncestor(path: path)
             }
             guard (info.st_mode & 0o022) == 0 else {
-                throw InstallError.untrustedAncestor(path: current.path())
+                throw InstallError.untrustedAncestor(path: path)
             }
-            guard !hasExtendedACL(at: current) else {
-                throw InstallError.untrustedAncestor(path: current.path())
+            guard !hasExtendedACL(at: path) else {
+                throw InstallError.untrustedAncestor(path: path)
             }
             if isRoot, info.st_uid != 0 {
-                throw InstallError.untrustedAncestor(path: current.path())
+                throw InstallError.untrustedAncestor(path: path)
             }
             if canonicalPath(current) == stop {
                 break
@@ -381,6 +372,17 @@ extension Installer {
             }
             current = parent
         }
+    }
+
+    /// The literal path for the no-follow probes: `deletingLastPathComponent()`
+    /// leaves a trailing slash, which makes `lstat` and `acl_get_link_np`
+    /// follow a final-component directory symlink.
+    private func noFollowPath(_ url: URL) -> String {
+        var path = url.path(percentEncoded: false)
+        if path.count > 1, path.hasSuffix("/") {
+            path.removeLast()
+        }
+        return path
     }
 
     private func canonicalPath(_ url: URL) -> String {
