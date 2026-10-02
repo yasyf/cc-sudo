@@ -1,4 +1,5 @@
 import AuthKit
+import Darwin
 import Foundation
 import os
 
@@ -13,6 +14,10 @@ public struct Installer: Sendable {
         case keygenFailed(exitCode: Int32, stderr: String)
         case malformedKeygenOutput(String)
         case noConsoleUser
+        case stagingContainsSymlink(path: String)
+        case enumerationFailed(path: String)
+        case hardeningFailed(path: String)
+        case untrustedAncestor(path: String)
     }
 
     public static let verifierDirectory = "/Library/PrivilegedHelperTools"
@@ -129,15 +134,18 @@ public struct Installer: Sendable {
         _ = try fileManager.replaceItemAt(destination, withItemAt: staging)
     }
 
-    /// Copies the validated Caskroom authkit bundle into the root-owned
-    /// `/Library/PrivilegedHelperTools/authkit.app` and re-validates the STAGED
-    /// copy against the authkit DR before promotion — the runtime verifier pins
-    /// and spawns THIS root-owned copy, so a bundle swapped mid-copy is caught
-    /// and the validate/exec swap race on the group-writable Caskroom path is
-    /// removed. A copy of a signed bundle keeps its signature, entitlements, and
-    /// provisioning profile, so the SE key still works. The runtime verifier and
-    /// the install-time `prompt-helper` re-resolve the staged inner executable
-    /// themselves, so nothing is returned.
+    /// Stages the Caskroom authkit bundle into the root-owned
+    /// `/Library/PrivilegedHelperTools/authkit.app` and freezes it so the
+    /// runtime verifier and `prompt-helper` pin and spawn bytes the console user
+    /// cannot rewrite after validation. The copy lands in a private 0700 staging
+    /// dir no non-root code can enter, is proven symlink-free (the legit bundle
+    /// has none; any link is hostile and fails closed), then hardened to
+    /// root-owned, non-group/other-writable, ACL-free. Only the frozen bytes are
+    /// validated against the authkit DR, the destination's ancestors are checked
+    /// root-owned and unwritable, and the bundle is promoted by an atomic rename
+    /// swap — no validate→promote→spawn race survives. The runtime verifier and
+    /// `prompt-helper` re-resolve the inner executable themselves, so nothing is
+    /// returned.
     func stageHelperBundle(from caskBundle: URL) throws {
         let fileManager = FileManager.default
         let directory = rooted(Self.verifierDirectory)
@@ -147,17 +155,26 @@ public struct Installer: Sendable {
             attributes: attributes(mode: 0o755)
         )
         let destination = HelperTrust.stagedBundleURL(root: root)
-        let staging = directory.appending(component: "authkit.app.installing", directoryHint: .isDirectory)
-        if fileManager.fileExists(atPath: staging.path()) {
-            try fileManager.removeItem(at: staging)
+        let privateStaging = directory.appending(component: "authkit.app.staging", directoryHint: .isDirectory)
+        if fileManager.fileExists(atPath: privateStaging.path()) {
+            try fileManager.removeItem(at: privateStaging)
         }
-        try fileManager.copyItem(at: caskBundle, to: staging)
-        try validator.validate(path: staging, requirement: helperRequirement)
-        if fileManager.fileExists(atPath: destination.path()) {
-            _ = try fileManager.replaceItemAt(destination, withItemAt: staging)
-        } else {
-            try fileManager.moveItem(at: staging, to: destination)
-        }
+        try fileManager.createDirectory(
+            at: privateStaging,
+            withIntermediateDirectories: false,
+            attributes: attributes(mode: 0o700)
+        )
+        defer { try? fileManager.removeItem(at: privateStaging) }
+        let stagedBundle = privateStaging.appending(
+            component: destination.lastPathComponent, directoryHint: .isDirectory
+        )
+        try fileManager.copyItem(at: caskBundle, to: stagedBundle)
+
+        let entries = try provenSymlinkFreeEntries(under: stagedBundle, fileManager: fileManager)
+        try hardenStagedTree(entries, fileManager: fileManager)
+        try validator.validate(path: stagedBundle, requirement: helperRequirement)
+        try verifyTrustedAncestors(of: destination.deletingLastPathComponent())
+        try promote(stagedBundle, to: destination, fileManager: fileManager)
     }
 
     func installSudoers() async throws {
@@ -234,5 +251,145 @@ public struct Installer: Sendable {
         )
         try contents.write(to: url)
         try fileManager.setAttributes(attributes(mode: mode), ofItemAtPath: url.path())
+    }
+}
+
+extension Installer {
+    /// Walks the copied tree WITHOUT following symlinks and returns every entry
+    /// (the bundle root first) once proven symlink-free. Any symlink, or any
+    /// enumeration/stat failure, fails closed before a single byte is hardened.
+    private func provenSymlinkFreeEntries(under bundle: URL, fileManager: FileManager) throws -> [URL] {
+        guard try !isSymbolicLink(bundle) else {
+            throw InstallError.stagingContainsSymlink(path: bundle.path())
+        }
+        var enumerationFailed = false
+        guard let enumerator = fileManager.enumerator(
+            at: bundle,
+            includingPropertiesForKeys: [.isSymbolicLinkKey],
+            options: [],
+            errorHandler: { _, _ in enumerationFailed = true; return false }
+        ) else {
+            throw InstallError.enumerationFailed(path: bundle.path())
+        }
+        var entries = [bundle]
+        for case let url as URL in enumerator {
+            guard try !isSymbolicLink(url) else {
+                throw InstallError.stagingContainsSymlink(path: url.path())
+            }
+            entries.append(url)
+        }
+        guard !enumerationFailed else { throw InstallError.enumerationFailed(path: bundle.path()) }
+        return entries
+    }
+
+    private func isSymbolicLink(_ url: URL) throws -> Bool {
+        guard let isLink = try url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink else {
+            throw InstallError.enumerationFailed(path: url.path())
+        }
+        return isLink
+    }
+
+    /// Freezes the proven-symlink-free tree: set-ID and group/other write
+    /// stripped, ACLs cleared no-follow, ownership set to root (only as root).
+    private func hardenStagedTree(_ entries: [URL], fileManager: FileManager) throws {
+        let isRoot = geteuid() == 0
+        for url in entries {
+            var info = stat()
+            guard lstat(url.path(), &info) == 0 else {
+                throw InstallError.hardeningFailed(path: url.path())
+            }
+            var attributes: [FileAttributeKey: Any] = [
+                .posixPermissions: Int16((info.st_mode & 0o7777) & ~UInt16(0o6022)),
+            ]
+            if isRoot {
+                attributes[.ownerAccountID] = 0
+                attributes[.groupOwnerAccountID] = 0
+            }
+            try fileManager.setAttributes(attributes, ofItemAtPath: url.path())
+            try clearExtendedACL(at: url)
+        }
+    }
+
+    private func clearExtendedACL(at url: URL) throws {
+        guard let empty = acl_init(0) else { throw InstallError.hardeningFailed(path: url.path()) }
+        defer { acl_free(UnsafeMutableRawPointer(empty)) }
+        guard url.path().withCString({ acl_set_link_np($0, ACL_TYPE_EXTENDED, empty) }) == 0 else {
+            throw InstallError.hardeningFailed(path: url.path())
+        }
+    }
+
+    /// Whether the path carries any extended ACL, read no-follow. The trusted
+    /// ancestor chain is ACL-free, so any extended ACL on an ancestor is treated
+    /// as untrusted and fails closed rather than being parsed for a grant.
+    private func hasExtendedACL(at url: URL) -> Bool {
+        guard let acl = url.path().withCString({ acl_get_link_np($0, ACL_TYPE_EXTENDED) }) else {
+            return false
+        }
+        acl_free(UnsafeMutableRawPointer(acl))
+        return true
+    }
+
+    /// Requires each ancestor up to the rooted filesystem root to be a real
+    /// directory (no-follow), not group/other writable, ACL-free, root-owned.
+    private func verifyTrustedAncestors(of leaf: URL) throws {
+        let isRoot = geteuid() == 0
+        let stop = canonicalPath(root)
+        var current = leaf
+        while true {
+            var info = stat()
+            guard lstat(current.path(), &info) == 0 else {
+                throw InstallError.untrustedAncestor(path: current.path())
+            }
+            guard (info.st_mode & S_IFMT) == S_IFDIR else {
+                throw InstallError.untrustedAncestor(path: current.path())
+            }
+            guard (info.st_mode & 0o022) == 0 else {
+                throw InstallError.untrustedAncestor(path: current.path())
+            }
+            guard !hasExtendedACL(at: current) else {
+                throw InstallError.untrustedAncestor(path: current.path())
+            }
+            if isRoot, info.st_uid != 0 {
+                throw InstallError.untrustedAncestor(path: current.path())
+            }
+            if canonicalPath(current) == stop {
+                break
+            }
+            let parent = current.deletingLastPathComponent()
+            if canonicalPath(parent) == canonicalPath(current) {
+                break
+            }
+            current = parent
+        }
+    }
+
+    private func canonicalPath(_ url: URL) -> String {
+        var path = url.standardizedFileURL.path(percentEncoded: false)
+        if path.count > 1, path.hasSuffix("/") {
+            path.removeLast()
+        }
+        return path
+    }
+
+    /// Atomically swaps the hardened staged bundle into place — a RENAME_SWAP
+    /// when the destination exists (the old tree is then removed), a plain
+    /// rename otherwise — so the destination is never a half-populated tree.
+    private func promote(_ stagedBundle: URL, to destination: URL, fileManager: FileManager) throws {
+        if fileManager.fileExists(atPath: destination.path()) {
+            let swapped = stagedBundle.path().withCString { source in
+                destination.path().withCString { target in
+                    renamex_np(source, target, UInt32(RENAME_SWAP))
+                }
+            }
+            guard swapped == 0 else { throw InstallError.hardeningFailed(path: destination.path()) }
+            try fileManager.removeItem(at: stagedBundle)
+        } else {
+            let renamed = stagedBundle.path().withCString { source in
+                destination.path().withCString { target in
+                    rename(source, target)
+                }
+            }
+            guard renamed == 0 else { throw InstallError.hardeningFailed(path: destination.path()) }
+        }
     }
 }
