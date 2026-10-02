@@ -28,6 +28,7 @@ public protocol ProcessRunner: Sendable {
 public struct LiveProcessRunner: ProcessRunner {
     public enum SpawnError: Error, Sendable {
         case launchFailed(executable: String, detail: String)
+        case sigpipeGuardFailed(executable: String, detail: String)
     }
 
     public init() {}
@@ -58,10 +59,14 @@ public struct LiveProcessRunner: ProcessRunner {
             throw SpawnError.launchFailed(executable: executable, detail: error.localizedDescription)
         }
 
-        if let stdin {
-            try stdinPipe.fileHandleForWriting.write(contentsOf: stdin)
+        let stdinWriter = stdinPipe.fileHandleForWriting
+        guard fcntl(stdinWriter.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+            throw SpawnError.sigpipeGuardFailed(executable: executable, detail: String(cString: strerror(errno)))
         }
-        try stdinPipe.fileHandleForWriting.close()
+        if let stdin {
+            try stdinWriter.write(contentsOf: stdin)
+        }
+        try stdinWriter.close()
 
         // Drain both pipes concurrently BEFORE waiting: a child that fills a
         // pipe buffer while nobody reads would deadlock against waitUntilExit.

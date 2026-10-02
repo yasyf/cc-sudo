@@ -188,22 +188,24 @@ public struct Doctor: Sendable {
         guard let console = ConsoleUser.current() else {
             return CheckResult(name: "prompt probe", status: .warn, detail: "no console user to prompt")
         }
-        let helper: URL
         do {
-            helper = try HelperTrust.stagedHelperBinary()
+            _ = try HelperTrust.stagedHelperBinary()
         } catch {
             return CheckResult(name: "prompt probe", status: .fail, detail: "authkit pin failed: \(error)")
         }
-        // The reason rides an explicit /usr/bin/env hop: sudo's env_reset would
-        // strip a variable set on the outer launchctl process.
+        // Re-enter the root verifier as prompt-helper: it drops to the console
+        // user, sets AUTHKIT_REASON in the child environment, and spawns the
+        // pinned authkit as its same-user child — the same transport the runtime
+        // consent path uses, so the probe exercises exactly what `run` will.
+        let invocation = PrivilegedSpawn.launchctlInvocation(
+            verifier: RunClient.verifierPath,
+            consoleUID: console.uid,
+            authkitSubcommand: "consent",
+            reason: "cc-sudo doctor: prompt-path probe"
+        )
         guard let result = try? await runner.run(
-            executable: LocalHelper.launchctl,
-            arguments: [
-                "asuser", String(console.uid),
-                LocalHelper.sudo, "-u", "#\(console.uid)", "-H",
-                "/usr/bin/env", "\(CLI.reasonEnvironmentVariable)=cc-sudo doctor: prompt-path probe",
-                helper.path(), "consent",
-            ],
+            executable: invocation.executable,
+            arguments: invocation.arguments,
             stdin: nil,
             environment: nil
         ) else {

@@ -14,7 +14,7 @@ struct Root: AsyncParsableCommand {
         """,
         version: Version.current,
         subcommands: [
-            Run.self, Exec.self, MCP.self, Install.self, Trust.self,
+            Run.self, Exec.self, PromptHelper.self, MCP.self, Install.self, Trust.self,
             Uninstall.self, DoctorCommand.self, SynckitBridge.self, Hello.self,
         ]
     )
@@ -26,6 +26,13 @@ func exitClassifying(_ error: any Error) -> Never {
         Foundation.exit(status.rawValue)
     }
     Foundation.exit(1)
+}
+
+/// Exit for a verifier `exec`-path failure: an unclassified error maps to
+/// `verificationFailed` (105), never an exit 1 the MCP reads as approved.
+func exitVerifierFailure(_ error: any Error) -> Never {
+    FileHandle.standardError.write(Data("cc-sudo: \(message(for: error))\n".utf8))
+    Foundation.exit((ExitStatus(classifying: error) ?? .verificationFailed).rawValue)
 }
 
 func message(for error: any Error) -> String {
@@ -79,7 +86,42 @@ struct Exec: AsyncParsableCommand {
             let verifier = Verifier(dependencies: .live())
             try await verifier.authorizeAndRun(argv: command)
         } catch {
-            exitClassifying(error)
+            exitVerifierFailure(error)
+        }
+    }
+}
+
+struct PromptHelper: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "prompt-helper",
+        abstract: "Root-only privilege-drop shim that spawns the pinned authkit helper as the console user (internal).",
+        shouldDisplay: false
+    )
+
+    @Option(name: .customLong("uid"), help: "The console user's uid to drop to.")
+    var uid: UInt32
+
+    @Option(name: .customLong("reason"), help: "AUTHKIT_REASON for a verdict/vault subcommand.")
+    var reason: String?
+
+    @Argument(parsing: .postTerminator, help: "The authkit subcommand and its arguments, after '--'.")
+    var helperCommand: [String]
+
+    func run() async throws {
+        do {
+            let code = try PrivilegedSpawn.run(
+                targetUID: uid_t(uid),
+                authkitArguments: helperCommand,
+                reason: reason
+            )
+            Foundation.exit(code)
+        } catch {
+            // EVERY internal failure — a refused caller, a failed drop, AND the
+            // re-pin's HelperTrust.HelperError — maps to the non-contract code,
+            // never out to ArgumentParser's exit 1, which an upstream consumer
+            // would read as a user denial (and doctor as a rendered sheet).
+            FileHandle.standardError.write(Data("cc-sudo prompt-helper: \(error)\n".utf8))
+            Foundation.exit(PrivilegedSpawn.internalFailureExitCode)
         }
     }
 }

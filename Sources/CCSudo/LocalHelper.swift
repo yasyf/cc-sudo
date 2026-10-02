@@ -2,29 +2,36 @@ import AuthKit
 import Foundation
 import os
 
-/// The local prompt path: root re-homes the PINNED authkit binary into the
-/// console user's GUI session (`launchctl asuser <uid>`) and drops to that
-/// user (`sudo -u`) so the helper reaches the user's Secure-Enclave key and
-/// renders the Touch ID sheet on the console. The helper receives the full
-/// argv and the nonce on stdin, hashes and displays the argv ITSELF
-/// (display-digest binding), and returns `{key_id, sig}` on stdout.
+/// The local prompt path: the root verifier re-enters itself in the console
+/// user's GUI session (`launchctl asuser <uid>`) as the hidden `prompt-helper`
+/// shim, which drops to that user and spawns the PINNED authkit as its direct
+/// same-user child (see `PrivilegedSpawn`). Routing the spawn through the
+/// verifier — rather than `sudo -u` — makes the pinned cc-sudo binary authkit's
+/// parent, so authkit's caller pin validates; the old `sudo -u` hop left a root
+/// `sudo` monitor as the parent and failed that pin before any sheet appeared.
+/// The helper receives the full argv and the nonce on stdin, hashes and
+/// displays the argv ITSELF (display-digest binding), and returns
+/// `{key_id, sig}` on stdout.
 ///
 /// Exit codes follow the frozen helper contract: 0 approved · 1 denied ·
 /// 2 unavailable · 3 screen-locked. 2 and 3 let the strategy fall back to the
-/// synckitd socket; a denial is terminal.
+/// synckitd socket; a denial is terminal. A shim-internal failure (the drop or
+/// spawn itself) exits outside that contract and surfaces as a malformed
+/// response, never a false denial.
 public struct LocalHelper: ConsentSource {
-    static let launchctl = "/bin/launchctl"
-    static let sudo = "/usr/bin/sudo"
-
-    let helperBinary: URL
     let consoleUser: ConsoleUser
+    /// The root-owned verifier path re-entered as `prompt-helper`. Injectable
+    /// for tests; production is the installed NOPASSWD verifier.
+    let verifier: String
     let runner: any ProcessRunner
 
-    /// `helperBinary` must be the path HelperTrust just validated — this type
-    /// execs it verbatim and never re-resolves.
-    public init(helperBinary: URL, consoleUser: ConsoleUser, runner: any ProcessRunner = LiveProcessRunner()) {
-        self.helperBinary = helperBinary
+    public init(
+        consoleUser: ConsoleUser,
+        verifier: String = RunClient.verifierPath,
+        runner: any ProcessRunner = LiveProcessRunner()
+    ) {
         self.consoleUser = consoleUser
+        self.verifier = verifier
         self.runner = runner
     }
 
@@ -32,13 +39,14 @@ public struct LocalHelper: ConsentSource {
         let payload = try JSONEncoder().encode(
             ConsentSignRequest(nonce: request.nonce.base64EncodedString(), argv: request.argv)
         )
+        let invocation = PrivilegedSpawn.launchctlInvocation(
+            verifier: verifier,
+            consoleUID: consoleUser.uid,
+            authkitSubcommand: "consent-sign"
+        )
         let result = try await runner.run(
-            executable: Self.launchctl,
-            arguments: [
-                "asuser", String(consoleUser.uid),
-                Self.sudo, "-u", "#\(consoleUser.uid)", "-H",
-                helperBinary.path(), "consent-sign",
-            ],
+            executable: invocation.executable,
+            arguments: invocation.arguments,
             stdin: payload,
             environment: nil
         )

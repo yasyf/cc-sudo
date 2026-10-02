@@ -9,7 +9,9 @@ import AuthKit
 ///   104 unavailable — no prompt path could fire (no console user, screen
 ///       locked with no live peer, synckitd unreachable)
 ///   105 verificationFailed — signature rejected, enrolled key missing or
-///       malformed, or the authkit bundle failed its designated-requirement pin
+///       malformed, the authkit bundle failed its designated-requirement pin,
+///       or the consent transport returned an unusable response (never a silent
+///       exit 1 that the MCP surface would read as approved)
 ///   106 versionSkew — CLI and root-owned verifier disagree; run `cc-sudo install`
 public enum ExitStatus: Int32, Sendable {
     case denied = 103
@@ -25,7 +27,8 @@ public enum ExitStatus: Int32, Sendable {
             self = .denied
         case ConsentError.unavailable, ConsentError.screenLocked:
             self = .unavailable
-        case is VerifierError, is TrustStore.TrustError, is HelperTrust.HelperError,
+        case ConsentError.malformedResponse,
+             is VerifierError, is TrustStore.TrustError, is HelperTrust.HelperError,
              is Attestation.VerificationError, is OriginIdentity.OriginError:
             self = .verificationFailed
         case is VersionSkewError:

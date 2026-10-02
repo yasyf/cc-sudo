@@ -52,7 +52,7 @@ public extension Verifier.Dependencies {
         Verifier.Dependencies(
             generateNonce: { try Nonce.generate() },
             pinHelper: { try HelperTrust.stagedHelperBinary() },
-            consentSource: { pinnedHelper in
+            consentSource: { _ in
                 let synckit = SynckitConsentSource(
                     client: SynckitBridgeClient(
                         socketPath: liveSocketPath(),
@@ -63,7 +63,7 @@ public extension Verifier.Dependencies {
                 switch PromptStrategy.select() {
                 case let .localThenSynckit(console):
                     return FallbackConsentSource(
-                        primary: LocalHelper(helperBinary: pinnedHelper, consoleUser: console),
+                        primary: LocalHelper(consoleUser: console),
                         fallback: synckit
                     )
                 case .synckitOnly:
