@@ -22,6 +22,13 @@ import Testing
     #expect(ExitStatus.verificationFailed.rawValue == 105)
 }
 
+@Test func malformedTransportResponseIsVerificationFailedNeverApproved() {
+    // A prompt-helper exit 71 becomes malformedResponse; classifying it to 105
+    // keeps the MCP verdict off "approved" (the exit-1 false-approval path).
+    #expect(ExitStatus(classifying: ConsentError.malformedResponse("helper exited 71")) == .verificationFailed)
+    #expect(ExitStatus.verdict(forExitCode: 105) != "approved")
+}
+
 @Test func versionSkewClassifiesTo106() {
     let skew = VersionSkewError(clientVersion: "0.1.0", verifierVersion: "0.2.0")
     #expect(ExitStatus(classifying: skew) == .versionSkew)

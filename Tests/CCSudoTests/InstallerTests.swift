@@ -398,3 +398,37 @@ private func fakeSourceBinary(in root: URL) throws -> URL {
     #expect(!FileManager.default.fileExists(atPath: verifier.path()))
     #expect(!FileManager.default.fileExists(atPath: root.appending(path: "etc/cc-sudo").path()))
 }
+
+@Test func installReplacesASymlinkVerifierWithARegularRootOwnedCopy() async throws {
+    let fileManager = FileManager.default
+    let root = try temporaryRoot()
+    let signer = TestSigner()
+    let keygenOutput = try JSONEncoder().encode(KeygenResponse(keyID: "k", publicKey: signer.publicKeyBase64))
+    let runner = FakeRunner { executable, _ in
+        executable == PrivilegedSpawn.launchctl
+            ? SubprocessResult(exitCode: 0, stdout: keygenOutput, stderr: Data())
+            : .exit(0)
+    }
+    // Seed the Caskroom-symlink state the fix must replace: the destination
+    // verifier is a symlink into a user-writable file.
+    let phtDir = root.appending(path: "Library/PrivilegedHelperTools", directoryHint: .isDirectory)
+    try fileManager.createDirectory(at: phtDir, withIntermediateDirectories: true)
+    let userBytes = root.appending(component: "user-cc-sudo")
+    try Data("#!/bin/sh\n".utf8).write(to: userBytes)
+    let verifier = phtDir.appending(component: "cc-sudo-exec")
+    try fileManager.createSymbolicLink(at: verifier, withDestinationURL: userBytes)
+
+    let installer = Installer(runner: runner, root: root, euid: { 0 }, validator: StubCodeSignatureValidator())
+    _ = try await installer.install(
+        sourceExecutable: fakeSourceBinary(in: root),
+        originIdentity: "laptop",
+        helperBundle: fakeHelperBundle(in: root),
+        console: ConsoleUser(name: "yasyf", uid: 501)
+    )
+
+    // The promoted verifier is a regular file, not the user-writable symlink.
+    #expect((try? fileManager.destinationOfSymbolicLink(atPath: verifier.path())) == nil)
+    let attributes = try fileManager.attributesOfItem(atPath: verifier.path())
+    let mode = try #require((attributes[.posixPermissions] as? NSNumber)?.intValue)
+    #expect(mode & 0o022 == 0)
+}

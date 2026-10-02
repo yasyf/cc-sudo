@@ -18,6 +18,7 @@ public struct Installer: Sendable {
         case enumerationFailed(path: String)
         case hardeningFailed(path: String)
         case untrustedAncestor(path: String)
+        case verifierNotRegularFile(path: String)
     }
 
     public static let verifierDirectory = "/Library/PrivilegedHelperTools"
@@ -116,7 +117,11 @@ public struct Installer: Sendable {
     /// aborts before the binary can become the NOPASSWD root verifier.
     func installVerifier(sourceExecutable: URL) throws {
         let fileManager = FileManager.default
-        try validator.validate(path: sourceExecutable, requirement: verifierRequirement)
+        // Copy the resolved bytes, never a symlink: the NOPASSWD exec rule
+        // invokes the verifier path, so it must be a root-owned regular copy,
+        // not a link into the user-writable Caskroom.
+        let resolved = sourceExecutable.resolvingSymlinksInPath()
+        try validator.validate(path: resolved, requirement: verifierRequirement)
         let directory = rooted(Self.verifierDirectory)
         try fileManager.createDirectory(
             at: directory,
@@ -128,10 +133,15 @@ public struct Installer: Sendable {
         if fileManager.fileExists(atPath: staging.path()) {
             try fileManager.removeItem(at: staging)
         }
-        try fileManager.copyItem(at: sourceExecutable, to: staging)
-        try fileManager.setAttributes(attributes(mode: 0o755), ofItemAtPath: staging.path())
+        try fileManager.copyItem(at: resolved, to: staging)
+        var info = stat()
+        guard lstat(staging.path(), &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            throw InstallError.verifierNotRegularFile(path: staging.path())
+        }
+        try hardenStagedTree([staging], fileManager: fileManager)
         try validator.validate(path: staging, requirement: verifierRequirement)
-        _ = try fileManager.replaceItemAt(destination, withItemAt: staging)
+        try verifyTrustedAncestors(of: destination.deletingLastPathComponent())
+        try promote(staging, to: destination, fileManager: fileManager)
     }
 
     /// Stages the Caskroom authkit bundle into the root-owned

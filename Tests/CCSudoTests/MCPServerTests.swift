@@ -37,6 +37,19 @@ private func text(_ result: CallTool.Result) -> String {
     #expect(payload["exit_code"] == .int(103))
 }
 
+@Test func verificationFailedRunsAreToolErrorsNotApproved() async throws {
+    // An internal verifier/transport failure exits 105 → "verification_failed";
+    // it must surface as a tool error, never a false "approved".
+    let result = await server(verdict: "verification_failed", exitCode: 105).handleCall(
+        .init(name: "run_command", arguments: ["command": .array([.string("reboot")])])
+    )
+    #expect(result.isError == true)
+    let payload = try JSONDecoder().decode([String: Value].self, from: Data(text(result).utf8))
+    #expect(payload["verdict"] == .string("verification_failed"))
+    #expect(payload["verdict"] != .string("approved"))
+    #expect(payload["exit_code"] == .int(105))
+}
+
 @Test func missingCommandIsAnArgumentError() async {
     let result = await server(verdict: "approved", exitCode: 0).handleCall(
         .init(name: "run_command", arguments: [:])
