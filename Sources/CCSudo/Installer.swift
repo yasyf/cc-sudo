@@ -18,7 +18,16 @@ public struct Installer: Sendable {
     public static let verifierDirectory = "/Library/PrivilegedHelperTools"
     public static let verifierPath = RunClient.verifierPath
     public static let sudoersPath = "/etc/sudoers.d/cc-sudo"
-    public static let sudoersRule = "%admin ALL=(root) NOPASSWD: \(RunClient.verifierPath)\n"
+    /// NOPASSWD is scoped to the verifier's `exec` entrypoint ALONE — the one
+    /// hot path `cc-sudo run` drives. The verifier itself gates `exec` with the
+    /// nonce, the signature, and the tap, so `exec *` grants nothing `cc-sudo
+    /// run` doesn't already. Admin-reachable root must NOT extend to the hidden
+    /// `prompt-helper` shim or to `install`/`trust`/`uninstall`: those are
+    /// password-gated setup, and leaving `prompt-helper` NOPASSWD-reachable
+    /// would let admin-session code proxy arbitrary authkit operations with a
+    /// forged prompt. `prompt-helper` is reached only by the already-root
+    /// verifier, never through this rule.
+    public static let sudoersRule = "%admin ALL=(root) NOPASSWD: \(RunClient.verifierPath) exec *\n"
     static let visudo = "/usr/sbin/visudo"
 
     let runner: any ProcessRunner
@@ -67,8 +76,8 @@ public struct Installer: Sendable {
         guard euid() == 0 else { throw InstallError.notRoot }
         try installVerifier(sourceExecutable: sourceExecutable)
         try await installSudoers()
-        let stagedHelper = try stageHelperBundle(from: helperBundle)
-        let keyID = try await enrollSelfKey(pinnedHelper: stagedHelper, console: console)
+        try stageHelperBundle(from: helperBundle)
+        let keyID = try await enrollSelfKey(console: console)
         try writeRootFile(
             at: rooted(OriginIdentity.path),
             contents: Data((originIdentity + "\n").utf8),
@@ -126,9 +135,10 @@ public struct Installer: Sendable {
     /// and spawns THIS root-owned copy, so a bundle swapped mid-copy is caught
     /// and the validate/exec swap race on the group-writable Caskroom path is
     /// removed. A copy of a signed bundle keeps its signature, entitlements, and
-    /// provisioning profile, so the SE key still works. Returns the staged inner
-    /// executable for keygen.
-    func stageHelperBundle(from caskBundle: URL) throws -> URL {
+    /// provisioning profile, so the SE key still works. The runtime verifier and
+    /// the install-time `prompt-helper` re-resolve the staged inner executable
+    /// themselves, so nothing is returned.
+    func stageHelperBundle(from caskBundle: URL) throws {
         let fileManager = FileManager.default
         let directory = rooted(Self.verifierDirectory)
         try fileManager.createDirectory(
@@ -148,7 +158,6 @@ public struct Installer: Sendable {
         } else {
             try fileManager.moveItem(at: staging, to: destination)
         }
-        return destination.appending(path: HelperTrust.executableSubpath)
     }
 
     func installSudoers() async throws {
@@ -167,14 +176,20 @@ public struct Installer: Sendable {
         _ = try FileManager.default.replaceItemAt(rooted(Self.sudoersPath), withItemAt: staging)
     }
 
-    func enrollSelfKey(pinnedHelper: URL, console: ConsoleUser) async throws -> String {
+    /// Generates the console user's Secure-Enclave key through the just-installed
+    /// root-owned verifier re-entered as `prompt-helper` — so the pinned cc-sudo
+    /// binary, not a root `sudo` monitor, is authkit's parent and authkit's
+    /// caller pin validates. `prompt-helper` re-resolves and re-pins the staged
+    /// authkit itself.
+    func enrollSelfKey(console: ConsoleUser) async throws -> String {
+        let invocation = PrivilegedSpawn.launchctlInvocation(
+            verifier: rooted(RunClient.verifierPath).path(),
+            consoleUID: console.uid,
+            authkitSubcommand: "keygen"
+        )
         let result = try await runner.run(
-            executable: LocalHelper.launchctl,
-            arguments: [
-                "asuser", String(console.uid),
-                LocalHelper.sudo, "-u", "#\(console.uid)", "-H",
-                pinnedHelper.path(), "keygen",
-            ],
+            executable: invocation.executable,
+            arguments: invocation.arguments,
             stdin: nil,
             environment: nil
         )

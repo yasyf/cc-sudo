@@ -60,14 +60,14 @@ private let request = ConsentRequest(
 private func helper(respond: @escaping @Sendable (String, [String]) -> SubprocessResult) -> (LocalHelper, FakeRunner) {
     let runner = FakeRunner(respond: respond)
     let source = LocalHelper(
-        helperBinary: URL(filePath: "/pinned/authkit.app/Contents/MacOS/authkit"),
         consoleUser: ConsoleUser(name: "yasyf", uid: 501),
+        verifier: "/Library/PrivilegedHelperTools/cc-sudo-exec",
         runner: runner
     )
     return (source, runner)
 }
 
-@Test func localHelperSpawnsThePinnedBinaryIntoTheConsoleSession() async throws {
+@Test func localHelperReentersTheVerifierAsPromptHelperInTheConsoleSession() async throws {
     let response = try JSONEncoder().encode(ConsentSignResponse(keyID: "k", sig: Data([7]).base64EncodedString()))
     let (source, runner) = helper { _, _ in
         SubprocessResult(exitCode: 0, stdout: response, stderr: Data())
@@ -76,13 +76,18 @@ private func helper(respond: @escaping @Sendable (String, [String]) -> Subproces
     #expect(consent.origin == .local)
     #expect(consent.signature == Data([7]))
 
+    // The spawn re-enters the PINNED root verifier as prompt-helper — not
+    // `sudo -u` — so the pinned cc-sudo binary becomes authkit's same-user
+    // parent. authkit is never named on the command line; prompt-helper
+    // re-resolves and re-pins it.
     let spawn = try #require(runner.spawns.first)
     #expect(spawn.executable == "/bin/launchctl")
     #expect(spawn.arguments == [
         "asuser", "501",
-        "/usr/bin/sudo", "-u", "#501", "-H",
-        "/pinned/authkit.app/Contents/MacOS/authkit", "consent-sign",
+        "/Library/PrivilegedHelperTools/cc-sudo-exec", "prompt-helper", "--uid", "501",
+        "--", "consent-sign",
     ])
+    #expect(!spawn.arguments.contains("/usr/bin/sudo"))
 
     let sent = try JSONDecoder().decode(ConsentSignRequest.self, from: #require(spawn.stdin))
     #expect(sent.argv == request.argv)

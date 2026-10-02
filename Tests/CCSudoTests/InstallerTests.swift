@@ -3,8 +3,13 @@ import AuthKit
 import Foundation
 import Testing
 
-@Test func sudoersRuleIsExactlyTheFrozenLine() {
-    #expect(Installer.sudoersRule == "%admin ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/cc-sudo-exec\n")
+@Test func sudoersRuleGrantsOnlyTheExecEntrypoint() {
+    // NOPASSWD is scoped to `exec` — never the bare binary — so admin-session
+    // code cannot reach the privileged `prompt-helper` shim or the setup
+    // subcommands through the rule.
+    #expect(Installer.sudoersRule == "%admin ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/cc-sudo-exec exec *\n")
+    #expect(Installer.sudoersRule.contains(" exec *"))
+    #expect(!Installer.sudoersRule.contains("prompt-helper"))
 }
 
 @Test func verifierPathIsNeverAHomebrewPath() {
@@ -51,7 +56,7 @@ private func fakeSourceBinary(in root: URL) throws -> URL {
     let runner = FakeRunner { executable, _ in
         switch executable {
         case Installer.visudo: .exit(0)
-        case LocalHelper.launchctl: SubprocessResult(exitCode: 0, stdout: keygenOutput, stderr: Data())
+        case PrivilegedSpawn.launchctl: SubprocessResult(exitCode: 0, stdout: keygenOutput, stderr: Data())
         default: .exit(1, stderr: "unexpected spawn \(executable)")
         }
     }
@@ -88,14 +93,17 @@ private func fakeSourceBinary(in root: URL) throws -> URL {
     let origin = try String(contentsOf: root.appending(path: "etc/cc-sudo/origin-host"), encoding: .utf8)
     #expect(origin == "laptop\n")
 
-    // The keygen ran through launchctl asuser + sudo -u as the console user,
-    // against the STAGED root-owned helper — never the Caskroom path.
-    let keygenSpawn = try #require(runner.spawns.first(where: { $0.executable == LocalHelper.launchctl }))
+    // The keygen ran through `launchctl asuser` re-entering the just-installed
+    // root verifier as prompt-helper — so the pinned cc-sudo binary, not a root
+    // `sudo` monitor, is authkit's parent. authkit is resolved inside
+    // prompt-helper, never named on the command line, and `sudo -u` is gone.
+    let keygenSpawn = try #require(runner.spawns.first(where: { $0.executable == PrivilegedSpawn.launchctl }))
     #expect(keygenSpawn.arguments == [
         "asuser", "501",
-        "/usr/bin/sudo", "-u", "#501", "-H",
-        stagedHelper.path(), "keygen",
+        verifier.path(), "prompt-helper", "--uid", "501",
+        "--", "keygen",
     ])
+    #expect(!keygenSpawn.arguments.contains("/usr/bin/sudo"))
 }
 
 @Test func installRejectsAnUnsignedVerifierSourceBeforeAnyCopy() async throws {
@@ -130,7 +138,7 @@ private func fakeSourceBinary(in root: URL) throws -> URL {
     // A fully-succeeding runner: were the staged-copy validation deleted,
     // install would run to completion and promote the tampered binary.
     let runner = FakeRunner { executable, _ in
-        executable == LocalHelper.launchctl
+        executable == PrivilegedSpawn.launchctl
             ? SubprocessResult(exitCode: 0, stdout: keygenOutput, stderr: Data())
             : .exit(0)
     }
@@ -185,7 +193,7 @@ private func fakeSourceBinary(in root: URL) throws -> URL {
         atPath: root.appending(path: "Library/PrivilegedHelperTools/authkit.app").path()
     ))
     // The staged helper never validated, so keygen never ran.
-    #expect(runner.spawns.allSatisfy { $0.executable != LocalHelper.launchctl })
+    #expect(runner.spawns.allSatisfy { $0.executable != PrivilegedSpawn.launchctl })
 }
 
 @Test func installRefusesWithoutRoot() async throws {
@@ -225,7 +233,7 @@ private func fakeSourceBinary(in root: URL) throws -> URL {
 @Test func failedKeygenAbortsEnrollment() async throws {
     let root = try temporaryRoot()
     let runner = FakeRunner { executable, _ in
-        executable == LocalHelper.launchctl ? .exit(2, stderr: "no provisioned bundle") : .exit(0)
+        executable == PrivilegedSpawn.launchctl ? .exit(2, stderr: "no provisioned bundle") : .exit(0)
     }
     let installer = Installer(runner: runner, root: root, euid: { 0 }, validator: StubCodeSignatureValidator())
 
@@ -245,7 +253,7 @@ private func fakeSourceBinary(in root: URL) throws -> URL {
     let signer = TestSigner()
     let keygenOutput = try JSONEncoder().encode(KeygenResponse(keyID: "k", publicKey: signer.publicKeyBase64))
     let runner = FakeRunner { executable, _ in
-        executable == LocalHelper.launchctl
+        executable == PrivilegedSpawn.launchctl
             ? SubprocessResult(exitCode: 0, stdout: keygenOutput, stderr: Data())
             : .exit(0)
     }
