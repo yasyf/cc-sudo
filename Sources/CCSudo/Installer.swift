@@ -129,10 +129,21 @@ public struct Installer: Sendable {
             attributes: attributes(mode: 0o755)
         )
         let destination = rooted(Self.verifierPath)
-        let staging = directory.appending(component: "cc-sudo-exec.installing")
-        if fileManager.fileExists(atPath: staging.path()) {
-            try fileManager.removeItem(at: staging)
+        try verifyTrustedAncestors(of: destination.deletingLastPathComponent())
+        // Stage inside a private 0700 root-owned directory the console user
+        // cannot traverse, so it cannot open the staged copy and retain a write
+        // descriptor across hardening, validation, and promotion.
+        let privateStaging = directory.appending(component: "cc-sudo-exec.staging", directoryHint: .isDirectory)
+        if fileManager.fileExists(atPath: privateStaging.path()) {
+            try fileManager.removeItem(at: privateStaging)
         }
+        try fileManager.createDirectory(
+            at: privateStaging,
+            withIntermediateDirectories: false,
+            attributes: attributes(mode: 0o700)
+        )
+        defer { try? fileManager.removeItem(at: privateStaging) }
+        let staging = privateStaging.appending(component: destination.lastPathComponent)
         try fileManager.copyItem(at: resolved, to: staging)
         var info = stat()
         guard lstat(staging.path(), &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
@@ -140,7 +151,6 @@ public struct Installer: Sendable {
         }
         try hardenStagedTree([staging], fileManager: fileManager)
         try validator.validate(path: staging, requirement: verifierRequirement)
-        try verifyTrustedAncestors(of: destination.deletingLastPathComponent())
         try promote(staging, to: destination, fileManager: fileManager)
     }
 

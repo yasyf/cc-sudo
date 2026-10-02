@@ -28,6 +28,13 @@ func exitClassifying(_ error: any Error) -> Never {
     Foundation.exit(1)
 }
 
+/// Exit for a verifier `exec`-path failure: an unclassified error maps to
+/// `verificationFailed` (105), never an exit 1 the MCP reads as approved.
+func exitVerifierFailure(_ error: any Error) -> Never {
+    FileHandle.standardError.write(Data("cc-sudo: \(message(for: error))\n".utf8))
+    Foundation.exit((ExitStatus(classifying: error) ?? .verificationFailed).rawValue)
+}
+
 func message(for error: any Error) -> String {
     if let skew = error as? VersionSkewError {
         return skew.message
@@ -79,7 +86,7 @@ struct Exec: AsyncParsableCommand {
             let verifier = Verifier(dependencies: .live())
             try await verifier.authorizeAndRun(argv: command)
         } catch {
-            exitClassifying(error)
+            exitVerifierFailure(error)
         }
     }
 }

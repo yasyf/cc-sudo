@@ -169,13 +169,13 @@ private func fakeSourceBinary(in root: URL) throws -> URL {
             ? SubprocessResult(exitCode: 0, stdout: keygenOutput, stderr: Data())
             : .exit(0)
     }
-    // The SOURCE binary passes the cc-sudo self-pin; the STAGED
-    // cc-sudo-exec.installing copy fails it — a source swapped mid-copy. Only
-    // the staged-copy check (validate AFTER the copy, BEFORE replaceItemAt)
-    // can catch this, so this test fails if that validation is removed.
+    // The SOURCE binary passes the cc-sudo self-pin; the copy staged under
+    // cc-sudo-exec.staging fails it — a source swapped mid-copy. Only the
+    // staged-copy check (validate AFTER the copy, BEFORE promotion) can catch
+    // this, so this test fails if that validation is removed.
     let validator = StubCodeSignatureValidator { path, requirement in
         requirement == DesignatedRequirement.string(identifier: DesignatedRequirement.ccSudoIdentifier)
-            && path.lastPathComponent == "cc-sudo-exec.installing"
+            && path.path().contains("cc-sudo-exec.staging")
     }
     let installer = Installer(runner: runner, root: root, euid: { 0 }, validator: validator)
 
