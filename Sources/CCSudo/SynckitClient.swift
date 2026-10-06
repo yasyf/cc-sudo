@@ -68,6 +68,21 @@ struct SynckitEnvelope<Params: Encodable>: Encodable {
     let params: Params
 }
 
+struct DaemonKitBusinessTerminal: Decodable {
+    struct ProductError: Decodable {
+        let code: String?
+        let message: String?
+    }
+
+    let body: Data?
+    let error: ProductError?
+
+    enum CodingKeys: String, CodingKey {
+        case body = "Body"
+        case error
+    }
+}
+
 struct SynckitReply<Result: Decodable>: Decodable {
     let accepted: Bool
     let result: Result?
@@ -196,10 +211,22 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
         guard let responsePayload = terminal.payload else {
             throw ClientError.protocolViolation("response carried no payload")
         }
+        let business: DaemonKitBusinessTerminal
+        do {
+            business = try JSONDecoder().decode(DaemonKitBusinessTerminal.self, from: responsePayload)
+        } catch {
+            throw ClientError.protocolViolation("decode business terminal: \(error)")
+        }
+        if let failure = business.error {
+            throw ClientError.rpc([failure.code, failure.message].compactMap(\.self).joined(separator: ": "))
+        }
+        guard let body = business.body else {
+            throw ClientError.protocolViolation("business terminal carried no body")
+        }
 
         let reply: SynckitReply<Result>
         do {
-            reply = try JSONDecoder().decode(SynckitReply<Result>.self, from: responsePayload)
+            reply = try JSONDecoder().decode(SynckitReply<Result>.self, from: body)
         } catch {
             throw ClientError.protocolViolation("decode response: \(error)")
         }
