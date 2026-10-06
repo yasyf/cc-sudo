@@ -1,15 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-readonly synckit_version="0.35.2"
+readonly synckit_version="0.40.0"
 readonly state_fingerprint="2dc96a8a0930930535e711cbab04af029573c9b95318206f8a8fbad87677ca38"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-scratch="$(mktemp -d "/private/tmp/cc-sudo-synckit-interop.XXXXXX")"
+scratch="$(mktemp -d "/private/tmp/ccs.XXXXXX")"
 scratch="$(cd "$scratch" && pwd -P)"
 config="$scratch/config"
 home="$scratch/home"
-socket="$config/synckit/rpc.sock"
+socket="$home/.daemonkit/a/com.github.yasyf.synckit.serve/daemon.sock"
 daemon_pid=""
 
 cleanup() {
@@ -38,7 +38,7 @@ printf '%s\n' \
     "{\"schema\":{\"identity\":\"synckit-state-v1\",\"version\":1,\"fingerprint\":\"${state_fingerprint}\"},\"host_registry\":{\"self\":\"\",\"hosts\":[]},\"synckit\":{}}" \
     > "$config/synckit/state.json"
 
-XDG_CONFIG_HOME="$config" HOME="$home" "$scratch/bin/synckitd" serve > "$scratch/synckitd.log" 2>&1 &
+XDG_CONFIG_HOME="$config" HOME="$home" DAEMONKIT_HOME="$home" "$scratch/bin/synckitd" serve > "$scratch/synckitd.log" 2>&1 &
 daemon_pid="$!"
 
 for _ in {1..100}; do
@@ -56,5 +56,5 @@ done
 }
 
 cd "$root"
-CC_SUDO_SYNCKITD_SOCKET="$socket" \
-    swift test --filter SynckitClientTests.publishedRuntimeHandshakeIsExact
+CC_SUDO_SYNCKITD_HOME="$home" \
+    scripts/swift-test.sh --filter SynckitClientTests.publishedRuntimeAnswersStatus

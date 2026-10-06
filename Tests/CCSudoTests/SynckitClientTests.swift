@@ -1,83 +1,129 @@
 @testable import CCSudo
-@testable import DaemonKit
 import Foundation
 import Testing
 
-private final class OneShotServer: @unchecked Sendable {
-    private enum RequestWaitError: Error {
-        case timedOut
+private enum SynckitFixtureError: Error, CustomStringConvertible {
+    case binaryMissing
+    case mkdtemp(Int32)
+    case exited
+    case timedOut
+    case malformedLine(String)
+
+    var description: String {
+        switch self {
+        case .binaryMissing:
+            "CC_SUDO_SYNCKIT_FIXTURE is unset; run scripts/swift-test.sh"
+        case let .mkdtemp(code):
+            "mkdtemp failed with errno \(code)"
+        case .exited:
+            "synckit fixture closed its output"
+        case .timedOut:
+            "synckit fixture printed no line in time"
+        case let .malformedLine(line):
+            "unexpected synckit fixture line: \(line)"
+        }
+    }
+}
+
+private final class FixtureLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = Data()
+    private var lines: [String] = []
+    private var finished = false
+
+    init(_ handle: FileHandle) {
+        handle.readabilityHandler = { [weak self] handle in
+            self?.ingest(handle.availableData)
+        }
     }
 
+    private func ingest(_ chunk: Data) {
+        lock.withLock {
+            guard !chunk.isEmpty else {
+                finished = true
+                return
+            }
+            buffer.append(chunk)
+            while let newline = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                lines.append(String(bytes: buffer[buffer.startIndex ..< newline], encoding: .utf8) ?? "")
+                buffer.removeSubrange(buffer.startIndex ... newline)
+            }
+        }
+    }
+
+    func next(timeout: Duration) async throws -> String {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while true {
+            let (line, done) = lock.withLock { () -> (String?, Bool) in
+                lines.isEmpty ? (nil, finished) : (lines.removeFirst(), false)
+            }
+            if let line {
+                return line
+            }
+            if done {
+                throw SynckitFixtureError.exited
+            }
+            guard ContinuousClock.now < deadline else {
+                throw SynckitFixtureError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+}
+
+private final class SynckitFixture: @unchecked Sendable {
     struct Request: Sendable {
         let operation: String
         let payload: Data
     }
 
-    private actor Capture {
-        private var request: Request?
-        private var waiters: [CheckedContinuation<Request, Never>] = []
-
-        func record(_ request: Request) {
-            self.request = request
-            let pending = waiters
-            waiters.removeAll()
-            for waiter in pending {
-                waiter.resume(returning: request)
-            }
-        }
-
-        func value() async -> Request {
-            if let request {
-                return request
-            }
-            return await withCheckedContinuation { waiters.append($0) }
-        }
-    }
-
-    let path: String
-    private let directory: URL
-    private let server: SocketServer
-    private let capture: Capture
+    let home: URL
+    let socketPath: String
+    private let process: Process
+    private let stdin: Pipe
+    private let lines: FixtureLines
 
     init(reply: String) async throws {
-        directory = FileManager.default.temporaryDirectory
-            .appending(component: "ck-\(UInt32.random(in: 0 ..< UInt32.max))", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-        path = directory.appending(component: "s.sock").path()
-        let response = Data(reply.utf8)
-        let capture = Capture()
-        self.capture = capture
-        var configuration = SocketServer.Configuration(
-            maximumFrameBytes: SynckitClient.maximumFrameBytes
-        )
-        configuration.maximumSessions = 1
-        server = SocketServer(
-            path: path,
-            wireBuild: SynckitClient.wireBuild,
-            configuration: configuration
-        ) { request in
-            await capture.record(Request(operation: request.operation, payload: request.payload))
-            return .terminal(SocketTerminal(payload: response))
+        guard let binary = ProcessInfo.processInfo.environment["CC_SUDO_SYNCKIT_FIXTURE"], !binary.isEmpty else {
+            throw SynckitFixtureError.binaryMissing
         }
-        try await server.start()
+        var template = Array("/tmp/ccs-XXXXXX".utf8CString)
+        guard let created = template.withUnsafeMutableBufferPointer({ mkdtemp($0.baseAddress) }) else {
+            throw SynckitFixtureError.mkdtemp(errno)
+        }
+        home = URL(fileURLWithPath: String(cString: created), isDirectory: true)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.arguments = ["-home", home.path, "-reply", reply]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.standardError
+        let input = Pipe()
+        process.standardInput = input
+        stdin = input
+        lines = FixtureLines(output.fileHandleForReading)
+        self.process = process
+        try process.run()
+        let ready = try await lines.next(timeout: .seconds(30))
+        guard ready.hasPrefix("READY ") else {
+            throw SynckitFixtureError.malformedLine(ready)
+        }
+        socketPath = String(ready.dropFirst("READY ".count))
     }
 
     func request() async throws -> Request {
-        try await withThrowingTaskGroup(of: Request.self) { group in
-            group.addTask { await self.capture.value() }
-            group.addTask {
-                try await Task.sleep(for: .seconds(5))
-                throw RequestWaitError.timedOut
-            }
-            let request = try await #require(group.next())
-            group.cancelAll()
-            return request
+        let line = try await lines.next(timeout: .seconds(5))
+        let fields = line.split(separator: " ", omittingEmptySubsequences: false)
+        guard fields.count == 3, fields[0] == "REQUEST", let payload = Data(base64Encoded: String(fields[2])) else {
+            throw SynckitFixtureError.malformedLine(line)
         }
+        return Request(operation: String(fields[1]), payload: payload)
     }
 
-    func close() async {
-        await server.stop()
-        try? FileManager.default.removeItem(at: directory)
+    func close() {
+        try? stdin.fileHandleForWriting.close()
+        process.waitUntilExit()
+        try? FileManager.default.removeItem(at: home)
     }
 }
 
@@ -95,21 +141,15 @@ private func withSynckitClient<Result>(
     }
 }
 
-private func withOneShotServer<Result>(
+private func withFixture<Result>(
     reply: String,
-    body: (SynckitClient, OneShotServer) async throws -> Result
+    body: (SynckitClient, SynckitFixture) async throws -> Result
 ) async throws -> Result {
-    let server = try await OneShotServer(reply: reply)
-    let client = SynckitClient(socketPath: server.path, deadline: 30)
-    do {
-        let result = try await body(client, server)
-        await client.close()
-        await server.close()
-        return result
-    } catch {
-        await client.close()
-        await server.close()
-        throw error
+    let fixture = try await SynckitFixture(reply: reply)
+    defer { fixture.close() }
+    let client = try SynckitClient(socketPath: SynckitClient.socketPath(home: fixture.home), deadline: 30)
+    return try await withSynckitClient(client) { client in
+        try await body(client, fixture)
     }
 }
 
@@ -125,20 +165,44 @@ private let params = SynckitConsentParams(
 
 @Suite(.serialized)
 struct SynckitClientTests {
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["CC_SUDO_SYNCKITD_SOCKET"] != nil))
-    func publishedRuntimeHandshakeIsExact() async throws {
-        let socketPath = try #require(ProcessInfo.processInfo.environment["CC_SUDO_SYNCKITD_SOCKET"])
-        #expect(SynckitClient.requiredRuntimeVersion == "0.35.2")
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["CC_SUDO_SYNCKITD_HOME"] != nil))
+    func publishedRuntimeAnswersStatus() async throws {
+        let home = try #require(ProcessInfo.processInfo.environment["CC_SUDO_SYNCKITD_HOME"])
+        #expect(SynckitClient.requiredRuntimeVersion == "0.40.0")
+        let socketPath = try SynckitClient.socketPath(home: URL(fileURLWithPath: home, isDirectory: true))
         try await withSynckitClient(SynckitClient(socketPath: socketPath, deadline: 5)) { client in
-            #expect(await client.probe())
+            let status = try await client.status()
+            #expect(status == SynckitStatus(meshSelf: "", hosts: []))
         }
     }
 
-    @Test func consentRequestUsesExactPersistentWireShape() async throws {
-        try await withOneShotServer(reply: """
+    @Test func socketPathMatchesTheProtocol2DaemonLayout() async throws {
+        let fixture = try await SynckitFixture(reply: #"{"ok":true,"result":null}"#)
+        defer { fixture.close() }
+        #expect(try SynckitClient.socketPath(home: fixture.home) == fixture.socketPath)
+        #expect(fixture.socketPath.hasSuffix("/.daemonkit/a/com.github.yasyf.synckit.serve/daemon.sock"))
+    }
+
+    @Test func statusDecodesTheMeshOverTheBusinessLane() async throws {
+        try await withFixture(reply: """
+        {"ok":true,"result":{"self":"me@studio","hosts":["me@laptop"],"manifests":2,"skipped":0}}
+        """) { client, fixture in
+            let status = try await client.status()
+            #expect(status == SynckitStatus(meshSelf: "me@studio", hosts: ["me@laptop"]))
+
+            let request = try await fixture.request()
+            #expect(request.operation == SynckitClient.operation)
+            let sent = try JSONSerialization.jsonObject(with: request.payload) as? [String: Any]
+            #expect(sent?["method"] as? String == "status")
+            #expect((sent?["params"] as? [String: Any])?.isEmpty == true)
+        }
+    }
+
+    @Test func consentRequestRoundTripsOverTheProtocol2BusinessLane() async throws {
+        try await withFixture(reply: """
         {"ok":true,"result":{"verdict":"approved","approved_by":"studio","routed":true,"cached":false,\
         "attestation":{"key_id":"kid","sig":"c2ln","signed_by":"studio"}}}
-        """) { client, server in
+        """) { client, fixture in
             let result = try await client.requestConsent(params)
 
             #expect(result.verdict == "approved")
@@ -148,7 +212,7 @@ struct SynckitClientTests {
             #expect(attestation.sig == "c2ln")
             #expect(attestation.signedBy == "studio")
 
-            let request = try await server.request()
+            let request = try await fixture.request()
             #expect(request.operation == SynckitClient.operation)
             let sent = try JSONSerialization.jsonObject(with: request.payload) as? [String: Any]
             #expect(sent?["method"] as? String == "consent.request")
@@ -162,7 +226,7 @@ struct SynckitClientTests {
     }
 
     @Test func rpcErrorsThrow() async throws {
-        _ = try await withOneShotServer(reply: #"{"ok":false,"error":"prompt gate wedged"}"#) { client, _ in
+        _ = try await withFixture(reply: #"{"ok":false,"error":"prompt gate wedged"}"#) { client, _ in
             await #expect(throws: SynckitClient.ClientError.self) {
                 _ = try await client.requestConsent(params)
             }
@@ -170,7 +234,7 @@ struct SynckitClientTests {
     }
 
     @Test func concurrentRequestsCoalesceConnectionSetup() async throws {
-        try await withOneShotServer(reply: #"{"ok":true,"result":{"verdict":"approved"}}"#) { client, _ in
+        try await withFixture(reply: #"{"ok":true,"result":{"verdict":"approved"}}"#) { client, _ in
             async let first = client.requestConsent(params)
             async let second = client.requestConsent(params)
             let firstResult = try await first
@@ -181,7 +245,7 @@ struct SynckitClientTests {
     }
 
     @Test func missingSocketIsUnavailableUpstream() async throws {
-        let client = SynckitClient(socketPath: "/nonexistent/rpc.sock", deadline: 1)
+        let client = SynckitClient(socketPath: "/nonexistent/daemon.sock", deadline: 1)
         try await withSynckitClient(client) { client in
             let source = SynckitConsentSource(
                 client: client,
@@ -204,7 +268,7 @@ struct SynckitClientTests {
     // MARK: - SynckitConsentSource verdict mapping over the real socket
 
     private func consent(reply: String, selfIdentity: String = "laptop") async throws -> SignedConsent {
-        try await withOneShotServer(reply: reply) { client, _ in
+        try await withFixture(reply: reply) { client, _ in
             let source = SynckitConsentSource(
                 client: client,
                 selfIdentity: selfIdentity
@@ -270,7 +334,7 @@ struct SynckitClientTests {
             """)
         }
         let bridge = SynckitBridgeClient(
-            socketPath: "/Users/alice/.config/synckit/rpc.sock",
+            home: URL(fileURLWithPath: "/Users/alice", isDirectory: true),
             userID: 501,
             runner: runner
         )
@@ -282,7 +346,7 @@ struct SynckitClientTests {
         #expect(spawn.executable == "/usr/bin/sudo")
         #expect(spawn.arguments == [
             "-u", "#501", "-H", RunClient.verifierPath,
-            "synckit-bridge", "--socket", "/Users/alice/.config/synckit/rpc.sock",
+            "synckit-bridge", "--socket", "/Users/alice/.daemonkit/a/com.github.yasyf.synckit.serve/daemon.sock",
         ])
         let bridged = try JSONDecoder().decode(SynckitConsentParams.self, from: #require(spawn.stdin))
         #expect(bridged.client == params.client)
@@ -292,7 +356,11 @@ struct SynckitClientTests {
 
     @Test func bridgeTransportFailureIsUnavailable() async throws {
         let runner = FakeRunner { _, _ in .exit(2, stderr: "connect failed") }
-        let bridge = SynckitBridgeClient(socketPath: "/tmp/missing.sock", userID: 501, runner: runner)
+        let bridge = SynckitBridgeClient(
+            home: URL(fileURLWithPath: "/tmp/missing", isDirectory: true),
+            userID: 501,
+            runner: runner
+        )
 
         await #expect(throws: SynckitClient.ClientError.self) {
             _ = try await bridge.requestConsent(params)

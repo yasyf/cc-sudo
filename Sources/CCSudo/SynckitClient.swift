@@ -50,14 +50,27 @@ public struct SynckitConsentResult: Codable, Sendable {
     }
 }
 
-struct SynckitEnvelope: Encodable {
-    let method: String
-    let params: SynckitConsentParams
+/// The status result: this host's mesh identity and its registered peers.
+public struct SynckitStatus: Codable, Sendable, Equatable {
+    public let meshSelf: String
+    public let hosts: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case meshSelf = "self"
+        case hosts
+    }
 }
 
-struct SynckitReply: Decodable {
+struct SynckitNoParams: Encodable {}
+
+struct SynckitEnvelope<Params: Encodable>: Encodable {
+    let method: String
+    let params: Params
+}
+
+struct SynckitReply<Result: Decodable>: Decodable {
     let accepted: Bool
-    let result: SynckitConsentResult?
+    let result: Result?
     let error: String?
 
     enum CodingKeys: String, CodingKey {
@@ -72,7 +85,7 @@ public protocol SynckitConsentClient: Sendable {
     func requestConsent(_ params: SynckitConsentParams) async throws -> SynckitConsentResult
 }
 
-/// An exact persistent DaemonKit v1 client for synckit's local RPC service.
+/// A persistent DaemonKit protocol-2 client for synckitd's business lane.
 public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
     public enum ClientError: Error, Sendable, CustomStringConvertible {
         case unavailable(String)
@@ -94,17 +107,17 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
         }
     }
 
-    public static let requiredRuntimeVersion = "0.35.2"
+    public static let requiredRuntimeVersion = "0.40.0"
     public static let wireBuild =
-        "com.yasyf.synckit.rpc/80574f71afde89fd7be498f813094104a6042dc04fd35bf8e2320de41ebac71c/v1"
+        "com.yasyf.synckit.rpc/4d9aa242cd68e09b6516b1f31361cc9f2496e5ac1028a9910788fe90773578e2/v1"
+    public static let serveLabel = "com.github.yasyf.synckit.serve"
     public static let operation = "synckit.rpc.call"
     public static let maximumFrameBytes = 16 * 1024 * 1024
     public static let readDeadline: TimeInterval = 11 * 60
 
-    /// The consent socket for a user: ~/.config/synckit/rpc.sock under their
-    /// passwd home directory.
-    public static func socketPath(home: URL) -> String {
-        home.appending(components: ".config", "synckit", "rpc.sock").path()
+    /// The resident synckitd socket under `home`, the user's passwd home.
+    public static func socketPath(home: URL) throws -> String {
+        try AgentPaths(home: home, label: serveLabel).socket().path
     }
 
     public let socketPath: String
@@ -124,7 +137,19 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
 
     /// Sends one consent.request and returns its signed result.
     public func requestConsent(_ params: SynckitConsentParams) async throws -> SynckitConsentResult {
-        let payload = try Self.encode(params)
+        try await call(method: "consent.request", params: params)
+    }
+
+    /// Reads the daemon's mesh identity and registered peers.
+    public func status() async throws -> SynckitStatus {
+        try await call(method: "status", params: SynckitNoParams())
+    }
+
+    private func call<Result: Decodable>(
+        method: String,
+        params: some Encodable
+    ) async throws -> Result {
+        let payload = try Self.encode(SynckitEnvelope(method: method, params: params))
         let client: SocketClient
         do {
             client = try await session.current(socketPath: socketPath, deadline: deadline)
@@ -150,15 +175,15 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
         return try Self.decode(terminal)
     }
 
-    private static func encode(_ params: SynckitConsentParams) throws -> Data {
+    private static func encode(_ envelope: some Encodable) throws -> Data {
         do {
-            return try JSONEncoder().encode(SynckitEnvelope(method: "consent.request", params: params))
+            return try JSONEncoder().encode(envelope)
         } catch {
             throw ClientError.protocolViolation("encode request: \(error)")
         }
     }
 
-    private static func decode(_ terminal: SocketTerminal) throws -> SynckitConsentResult {
+    private static func decode<Result: Decodable>(_ terminal: SocketTerminal) throws -> Result {
         if terminal.rejected {
             throw ClientError.protocolViolation(terminal.reason ?? "request rejected without a reason")
         }
@@ -172,9 +197,9 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
             throw ClientError.protocolViolation("response carried no payload")
         }
 
-        let reply: SynckitReply
+        let reply: SynckitReply<Result>
         do {
-            reply = try JSONDecoder().decode(SynckitReply.self, from: responsePayload)
+            reply = try JSONDecoder().decode(SynckitReply<Result>.self, from: responsePayload)
         } catch {
             throw ClientError.protocolViolation("decode response: \(error)")
         }
@@ -187,22 +212,20 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
         return result
     }
 
-    /// Performs the exact DaemonKit handshake without dispatching a request.
-    public func probe() async -> Bool {
-        do {
-            _ = try await session.current(socketPath: socketPath, deadline: deadline)
-            return true
-        } catch {
-            return false
-        }
-    }
-
     /// Closes the persistent session and lets a later call reconnect.
     public func close() async {
         await session.close()
     }
 
     private static func classify(_ error: any Error) -> ClientError {
+        switch error {
+        case is SessionDrainingError, is RuntimeFailedError:
+            return .unavailable(String(describing: error))
+        case is SocketCallDeadlineExceededError:
+            return .deadlineExceeded
+        default:
+            break
+        }
         guard let transport = error as? SessionTransportError else {
             return .protocolViolation(String(describing: error))
         }
@@ -236,16 +259,23 @@ private actor SynckitSession {
         case .idle:
             let id = UUID()
             let task = Task<SocketClient, Error> {
-                try await SocketClient(
+                let client = try await SocketClient(
                     path: socketPath,
-                    wireBuild: SynckitClient.wireBuild,
-                    role: SessionPeerRole.unprotected,
+                    schema: SynckitClient.wireBuild,
+                    lane: .business,
                     configuration: .init(
                         maximumFrameBytes: SynckitClient.maximumFrameBytes,
                         handshakeTimeout: min(deadline, 10),
                         writeTimeout: min(deadline, 10)
                     )
                 )
+                do {
+                    try await client.waitReady(deadline: Date().addingTimeInterval(min(deadline, 10)))
+                } catch {
+                    client.abort()
+                    throw error
+                }
+                return client
             }
             state = .connecting(id, task)
             return try await finishConnection(id: id, task: task)
@@ -313,55 +343,6 @@ private actor SynckitSession {
                 state = .idle
             }
             throw error
-        }
-    }
-}
-
-struct SynckitBridgeClient: SynckitConsentClient {
-    static let sudo = "/usr/bin/sudo"
-
-    let socketPath: String
-    let userID: uid_t?
-    let runner: any ProcessRunner
-
-    init(socketPath: String, userID: uid_t?, runner: any ProcessRunner = LiveProcessRunner()) {
-        self.socketPath = socketPath
-        self.userID = userID
-        self.runner = runner
-    }
-
-    func requestConsent(_ params: SynckitConsentParams) async throws -> SynckitConsentResult {
-        guard let userID else {
-            throw SynckitClient.ClientError.unavailable("no invoking user")
-        }
-        let input = try JSONEncoder().encode(params)
-        let response: SubprocessResult
-        do {
-            response = try await runner.run(
-                executable: Self.sudo,
-                arguments: [
-                    "-u", "#\(userID)", "-H", RunClient.verifierPath,
-                    "synckit-bridge", "--socket", socketPath,
-                ],
-                stdin: input,
-                environment: nil
-            )
-        } catch {
-            throw SynckitClient.ClientError.unavailable("bridge launch failed: \(error)")
-        }
-        switch response.exitCode {
-        case 0:
-            do {
-                return try JSONDecoder().decode(SynckitConsentResult.self, from: response.stdout)
-            } catch {
-                throw SynckitClient.ClientError.protocolViolation("bridge response: \(error)")
-            }
-        case 2:
-            throw SynckitClient.ClientError.unavailable(response.stderr.utf8Lossy)
-        default:
-            throw SynckitClient.ClientError.protocolViolation(
-                "bridge exited \(response.exitCode): \(response.stderr.utf8Lossy)"
-            )
         }
     }
 }

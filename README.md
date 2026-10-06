@@ -75,6 +75,6 @@ The full flag surface lives in `cc-sudo --help`.
 
 ## Development
 
-Build with `swift build`, test with `swift test`; conventions live in [AGENTS.md](AGENTS.md).
+Build with `swift build`. Test with `scripts/swift-test.sh`, which builds the Go synckitd stand-in in `Tests/SynckitFixture` that the client tests dial; conventions live in [AGENTS.md](AGENTS.md).
 
 Licensed under [PolyForm-Noncommercial-1.0.0](LICENSE).
