@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-06
+
+### Fixed
+- Reach synckitd 0.40.0 again. cc-sudo pins daemonkit 0.33.0, speaks session
+  protocol 2 on synckitd's business lane, and dials
+  `~/.daemonkit/a/com.github.yasyf.synckit.serve/daemon.sock` under the
+  console user's home in place of the retired `~/.config/synckit/rpc.sock`.
+  Routed and locked-Mac approvals had been unavailable since synckitd moved.
+
+### Changed
+- `cc-sudo doctor` reads synckitd's mesh identity and peers, and fails the
+  origin identity check when `/etc/cc-sudo/origin-host` differs from
+  synckitd's mesh self. Under sudo it reports the socket path without probing,
+  because synckitd serves only its own user.
+
 ## [0.10.3] - 2026-07-24
 
 ### Fixed

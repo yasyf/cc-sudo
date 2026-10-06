@@ -34,10 +34,11 @@ public struct Doctor: Sendable {
         await results.append(verifierCheck())
         await results.append(sudoersCheck())
         results.append(helperPinCheck())
-        await results.append(synckitCheck())
+        let (synckit, mesh) = await synckitCheck()
+        results.append(synckit)
         results.append(selfKeyCheck())
         results.append(peerKeysCheck())
-        results.append(originIdentityCheck())
+        results.append(originIdentityCheck(meshSelf: mesh?.meshSelf))
         results.append(promptPathCheck())
         if probePrompt {
             await results.append(promptProbe())
@@ -98,20 +99,45 @@ public struct Doctor: Sendable {
         }
     }
 
-    func synckitCheck() async -> CheckResult {
+    func synckitCheck() async -> (CheckResult, SynckitStatus?) {
         guard let home = PromptStrategy.socketHome(
             console: ConsoleUser.current(),
             invokerUID: PromptStrategy.sudoInvokerUID() ?? getuid()
         ) else {
-            return CheckResult(name: "synckitd", status: .warn, detail: "no user to resolve a socket for")
+            return (CheckResult(name: "synckitd", status: .warn, detail: "no user to resolve a socket for"), nil)
         }
-        let path = SynckitClient.socketPath(home: home)
-        let reachable = await SynckitClient(socketPath: path).probe()
-        return CheckResult(
+        let path: String
+        do {
+            path = try SynckitClient.socketPath(home: home)
+        } catch {
+            return (CheckResult(name: "synckitd", status: .fail, detail: String(describing: error)), nil)
+        }
+        guard geteuid() != 0 else {
+            return (CheckResult(
+                name: "synckitd",
+                status: .info,
+                detail: "\(path) not probed: synckitd serves only its own user, so run doctor without sudo"
+            ), nil)
+        }
+        let client = SynckitClient(socketPath: path, deadline: 10)
+        let status: SynckitStatus
+        do {
+            status = try await client.status()
+        } catch {
+            await client.close()
+            return (CheckResult(
+                name: "synckitd",
+                status: .warn,
+                detail: "\(path) unreachable (\(error)) — routed/locked-Mac approvals unavailable"
+            ), nil)
+        }
+        await client.close()
+        let peers = status.hosts.isEmpty ? "none" : status.hosts.joined(separator: ", ")
+        return (CheckResult(
             name: "synckitd",
-            status: reachable ? .pass : .warn,
-            detail: reachable ? path : "\(path) unreachable — routed/locked-Mac approvals unavailable"
-        )
+            status: .pass,
+            detail: "\(path), mesh self \(status.meshSelf), mesh peers: \(peers)"
+        ), status)
     }
 
     func selfKeyCheck() -> CheckResult {
@@ -142,9 +168,24 @@ public struct Doctor: Sendable {
         return CheckResult(name: "peer keys", status: failed ? .fail : .pass, detail: details.joined(separator: ", "))
     }
 
-    func originIdentityCheck() -> CheckResult {
+    func originIdentityCheck(meshSelf: String?) -> CheckResult {
         do {
             let identity = try OriginIdentity.read()
+            if meshSelf?.isEmpty == true {
+                return CheckResult(
+                    name: "origin identity",
+                    status: .warn,
+                    detail: "\(identity) unverified: synckitd has no mesh self yet — routed approvals cannot verify"
+                )
+            }
+            if let meshSelf, meshSelf != identity {
+                return CheckResult(
+                    name: "origin identity",
+                    status: .fail,
+                    detail: "\(identity) is not synckitd's mesh self \(meshSelf) — "
+                        + "run 'sudo cc-sudo install --origin \(meshSelf)'"
+                )
+            }
             return CheckResult(
                 name: "origin identity",
                 status: .pass,

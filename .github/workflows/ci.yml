@@ -45,6 +45,6 @@ jobs:
       - name: Verify built executable version
         run: scripts/verify-release-version.sh "$(swift build --show-bin-path)/cc-sudo"
       - name: Test
-        run: swift test
+        run: scripts/swift-test.sh
       - name: Verify synckitd runtime interop
         run: scripts/verify-synckit-interop.sh

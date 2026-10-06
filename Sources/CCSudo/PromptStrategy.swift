@@ -55,7 +55,7 @@ public extension Verifier.Dependencies {
             consentSource: { _ in
                 let synckit = SynckitConsentSource(
                     client: SynckitBridgeClient(
-                        socketPath: liveSocketPath(),
+                        home: PromptStrategy.socketHome(),
                         userID: liveSocketUserID()
                     ),
                     selfIdentity: (try? OriginIdentity.read()) ?? OriginIdentity.defaultIdentity()
@@ -75,15 +75,6 @@ public extension Verifier.Dependencies {
             originIdentity: { try OriginIdentity.read() },
             execute: { argv in try Execution.replaceProcess(argv: argv) }
         )
-    }
-
-    internal static func liveSocketPath() -> String {
-        guard let home = PromptStrategy.socketHome() else {
-            // No console user and no SUDO_UID home: point at a path that will
-            // fail closed as unavailable.
-            return "/var/empty/.config/synckit/rpc.sock"
-        }
-        return SynckitClient.socketPath(home: home)
     }
 
     internal static func liveSocketUserID() -> uid_t? {
