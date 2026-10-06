@@ -85,7 +85,11 @@ func waitReady(ctx context.Context, spec daemonkit.Daemon) error {
 		return err
 	}
 	business := client.Business()
-	defer func() { _ = business.Close(context.WithoutCancel(ctx)) }()
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = business.Close(closeCtx)
+	}()
 	probe, err := json.Marshal(rpc.Request{Method: probeMethod})
 	if err != nil {
 		return err

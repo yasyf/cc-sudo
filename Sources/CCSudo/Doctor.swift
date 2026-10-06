@@ -171,6 +171,13 @@ public struct Doctor: Sendable {
     func originIdentityCheck(meshSelf: String?) -> CheckResult {
         do {
             let identity = try OriginIdentity.read()
+            if meshSelf?.isEmpty == true {
+                return CheckResult(
+                    name: "origin identity",
+                    status: .warn,
+                    detail: "\(identity) unverified: synckitd has no mesh self yet — routed approvals cannot verify"
+                )
+            }
             if let meshSelf, meshSelf != identity {
                 return CheckResult(
                     name: "origin identity",

@@ -199,8 +199,31 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
     }
 
     private static func decode<Result: Decodable>(_ terminal: SocketTerminal) throws -> Result {
+        let body = try businessBody(terminal)
+        let reply: SynckitReply<Result>
+        do {
+            reply = try JSONDecoder().decode(SynckitReply<Result>.self, from: body)
+        } catch {
+            throw ClientError.protocolViolation("decode response: \(error)")
+        }
+        guard reply.accepted else {
+            throw ClientError.rpc(reply.error ?? "unspecified RPC error")
+        }
+        guard let result = reply.result else {
+            throw ClientError.protocolViolation("successful response carried no result")
+        }
+        return result
+    }
+
+    private static func businessBody(_ terminal: SocketTerminal) throws -> Data {
         if terminal.rejected {
-            throw ClientError.protocolViolation(terminal.reason ?? "request rejected without a reason")
+            let reason = terminal.reason ?? "request rejected without a reason"
+            switch terminal.code {
+            case .runtimeStarting, .runtimeDraining:
+                throw ClientError.unavailable(reason)
+            default:
+                throw ClientError.protocolViolation(reason)
+            }
         }
         if let error = terminal.error {
             if error == "context deadline exceeded" {
@@ -223,20 +246,7 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
         guard let body = business.body else {
             throw ClientError.protocolViolation("business terminal carried no body")
         }
-
-        let reply: SynckitReply<Result>
-        do {
-            reply = try JSONDecoder().decode(SynckitReply<Result>.self, from: body)
-        } catch {
-            throw ClientError.protocolViolation("decode response: \(error)")
-        }
-        guard reply.accepted else {
-            throw ClientError.rpc(reply.error ?? "unspecified RPC error")
-        }
-        guard let result = reply.result else {
-            throw ClientError.protocolViolation("successful response carried no result")
-        }
-        return result
+        return body
     }
 
     /// Closes the persistent session and lets a later call reconnect.
@@ -250,6 +260,8 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
             return .unavailable(String(describing: error))
         case is SocketCallDeadlineExceededError:
             return .deadlineExceeded
+        case let rejection as SocketHandshakeRejectionError where rejection.code == .sessionCapacity:
+            return .unavailable(String(describing: rejection))
         default:
             break
         }

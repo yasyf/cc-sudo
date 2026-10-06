@@ -103,12 +103,25 @@ private final class SynckitFixture: @unchecked Sendable {
         stdin = input
         lines = FixtureLines(output.fileHandleForReading)
         self.process = process
-        try process.run()
-        let ready = try await lines.next(timeout: .seconds(30))
-        guard ready.hasPrefix("READY ") else {
-            throw SynckitFixtureError.malformedLine(ready)
+        do {
+            try process.run()
+            let ready = try await lines.next(timeout: .seconds(30))
+            guard ready.hasPrefix("READY ") else {
+                throw SynckitFixtureError.malformedLine(ready)
+            }
+            socketPath = String(ready.dropFirst("READY ".count))
+        } catch {
+            Self.stop(process: process, stdin: input, home: home)
+            throw error
         }
-        socketPath = String(ready.dropFirst("READY ".count))
+    }
+
+    private static func stop(process: Process, stdin: Pipe, home: URL) {
+        try? stdin.fileHandleForWriting.close()
+        if process.isRunning {
+            process.waitUntilExit()
+        }
+        try? FileManager.default.removeItem(at: home)
     }
 
     func request() async throws -> Request {
@@ -121,9 +134,7 @@ private final class SynckitFixture: @unchecked Sendable {
     }
 
     func close() {
-        try? stdin.fileHandleForWriting.close()
-        process.waitUntilExit()
-        try? FileManager.default.removeItem(at: home)
+        Self.stop(process: process, stdin: stdin, home: home)
     }
 }
 
