@@ -15,37 +15,45 @@ import os
 public struct PeerTrust: Sendable {
     public enum PeerTrustError: Error, Sendable {
         case notRoot
+        case noSudoInvoker
         case fetchFailed(peer: String, exitCode: Int32, stderr: String)
     }
 
+    static let sudo = "/usr/bin/sudo"
     static let ssh = "/usr/bin/ssh"
 
     let runner: any ProcessRunner
     let store: TrustStore
     let euid: @Sendable () -> uid_t
+    let invokerUID: @Sendable () -> uid_t?
 
     public init(
         runner: any ProcessRunner = LiveProcessRunner(),
         store: TrustStore = TrustStore(),
-        euid: @escaping @Sendable () -> uid_t = { geteuid() }
+        euid: @escaping @Sendable () -> uid_t = { geteuid() },
+        invokerUID: @escaping @Sendable () -> uid_t? = { PromptStrategy.sudoInvokerUID() }
     ) {
         self.runner = runner
         self.store = store
         self.euid = euid
+        self.invokerUID = invokerUID
     }
 
-    /// Enrolls `peer`; returns the key ID for display. The fetched bytes must
-    /// parse as a P-256 X9.63 public key before anything is written.
+    /// Enrolls `peer`; returns the key ID for display. The fetch runs as the
+    /// sudo invoker so their known_hosts, ssh config, and agent apply. The
+    /// fetched bytes must parse as a P-256 X9.63 public key before anything is
+    /// written.
     public func trust(peer: String) async throws -> String {
         guard euid() == 0 else { throw PeerTrustError.notRoot }
+        guard let invoker = invokerUID() else { throw PeerTrustError.noSudoInvoker }
         try TrustStore.validatePeerName(peer)
 
-        // The "--" end-of-options token stops ssh from reading `peer` as a flag
-        // even if validatePeerName's dash guard is ever relaxed — defense in
-        // depth on the root-executed ssh spawn.
         let result = try await runner.run(
-            executable: Self.ssh,
-            arguments: ["-o", "BatchMode=yes", "--", peer, "cat", "/etc/cc-sudo/trusted/self.pub"],
+            executable: Self.sudo,
+            arguments: [
+                "-n", "-u", "#\(invoker)", "-H",
+                Self.ssh, "-o", "BatchMode=yes", "--", peer, "cat", "/etc/cc-sudo/trusted/self.pub",
+            ],
             stdin: nil,
             environment: nil
         )

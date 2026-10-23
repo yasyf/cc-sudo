@@ -348,16 +348,11 @@ extension Installer {
         while true {
             let path = noFollowPath(current)
             var info = stat()
-            guard lstat(path, &info) == 0 else {
-                throw InstallError.untrustedAncestor(path: path)
-            }
-            guard (info.st_mode & S_IFMT) == S_IFDIR else {
-                throw InstallError.untrustedAncestor(path: path)
-            }
-            guard (info.st_mode & 0o022) == 0 else {
-                throw InstallError.untrustedAncestor(path: path)
-            }
-            guard !hasExtendedACL(at: path) else {
+            guard lstat(path, &info) == 0,
+                  (info.st_mode & S_IFMT) == S_IFDIR,
+                  (info.st_mode & 0o022) == 0,
+                  !hasExtendedACL(at: path)
+            else {
                 throw InstallError.untrustedAncestor(path: path)
             }
             if isRoot, info.st_uid != 0 {

@@ -185,6 +185,8 @@ struct Trust: AsyncParsableCommand {
             print("enrolled peer \(peer) key \(keyID)")
         } catch PeerTrust.PeerTrustError.notRoot {
             throw ValidationError("trust requires root: sudo cc-sudo trust \(peer)")
+        } catch PeerTrust.PeerTrustError.noSudoInvoker {
+            throw ValidationError("trust fetches over the invoking user's ssh; run it through sudo: sudo cc-sudo trust \(peer)")
         } catch {
             exitClassifying(error)
         }

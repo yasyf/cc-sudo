@@ -16,10 +16,9 @@ public struct ConsoleUser: Sendable, Equatable {
     public static func current() -> ConsoleUser? {
         var uid: uid_t = 0
         var gid: gid_t = 0
-        guard let name = SCDynamicStoreCopyConsoleUser(nil, &uid, &gid) as String? else {
+        guard let name = SCDynamicStoreCopyConsoleUser(nil, &uid, &gid) as String?, name != "loginwindow" else {
             return nil
         }
-        guard name != "loginwindow" else { return nil }
         return ConsoleUser(name: name, uid: uid)
     }
 
