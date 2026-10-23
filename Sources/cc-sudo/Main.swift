@@ -142,8 +142,11 @@ struct Install: AsyncParsableCommand {
         abstract: "Install the root-owned verifier, sudoers rule, and enrolled key (requires sudo)."
     )
 
-    @Option(help: "This host's mesh identity for routed approvals (must match synckitd's self name).")
-    var origin: String = OriginIdentity.defaultIdentity()
+    @Option(help: """
+    This host's mesh identity for routed approvals (must match synckitd's self name); \
+    defaults to the installed identity, else the short host name.
+    """)
+    var origin: String?
 
     func run() async throws {
         do {
@@ -157,7 +160,7 @@ struct Install: AsyncParsableCommand {
             }
             let keyID = try await Installer().install(
                 sourceExecutable: executable,
-                originIdentity: origin,
+                originIdentity: OriginIdentity.forInstall(requested: origin),
                 helperBundle: helperBundle,
                 console: console
             )
