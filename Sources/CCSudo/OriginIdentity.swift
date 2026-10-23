@@ -27,7 +27,13 @@ public enum OriginIdentity {
         return identity
     }
 
-    /// The install-time default: the short host name.
+    /// The identity `cc-sudo install` writes: the requested one, else the
+    /// identity already at `path`, else the short host name.
+    public static func forInstall(requested: String?, path: String = path) -> String {
+        requested ?? (try? read(from: path)) ?? defaultIdentity()
+    }
+
+    /// The fallback when no identity is requested or recorded: the short host name.
     public static func defaultIdentity() -> String {
         var buffer = [UInt8](repeating: 0, count: 256)
         buffer.withUnsafeMutableBytes { raw in
