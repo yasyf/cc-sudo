@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-23
+
+### Fixed
+- `sudo cc-sudo trust <peer>` fetches the peer key over ssh as the invoking
+  user, so their known_hosts, ssh config, and agent apply. Root ssh had no
+  known_hosts entry for the peer and failed with "Host key verification
+  failed". `trust` refuses to run without `SUDO_UID` instead of falling back
+  to root's ssh.
+
 ## [0.12.0] - 2026-10-06
 
 ### Fixed
@@ -106,7 +115,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial scaffolding: the `CCSudo` library, the `cc-sudo` CLI skeleton with a `hello` smoke command, CI, and the Homebrew cask release pipeline.
 
-[Unreleased]: https://github.com/yasyf/cc-sudo/compare/v0.10.3...HEAD
+[Unreleased]: https://github.com/yasyf/cc-sudo/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/yasyf/cc-sudo/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/yasyf/cc-sudo/compare/v0.11.1...v0.12.0
 [0.10.3]: https://github.com/yasyf/cc-sudo/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/yasyf/cc-sudo/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/yasyf/cc-sudo/compare/v0.10.0...v0.10.1
