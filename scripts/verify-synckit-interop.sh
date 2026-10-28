@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-readonly synckit_version="0.40.0"
+readonly synckit_version="0.48.0"
 readonly state_fingerprint="2dc96a8a0930930535e711cbab04af029573c9b95318206f8a8fbad87677ca38"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

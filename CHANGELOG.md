@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-28
+
+### Changed
+- The Swift DaemonKit dependency moves from the exact 0.33.0 pin to the exact
+  0.35.4 pin, so the CLI and the root-owned verifier speak daemonkit session
+  protocol 3, the wire synckitd 0.48.0 and later serve. A 0.12.x cc-sudo against
+  such a synckitd fails every consent with `unsupportedProtocolVersion(3)`
+  before the request is sent. The minimum synckit runtime becomes 0.48.0 and the
+  CI interop check builds that synckitd. After `brew upgrade`, run
+  `sudo cc-sudo install` so the verifier copy is replaced too; until then the CLI
+  refuses with exit 106 (version skew) rather than talking an old protocol.
+
 ### Fixed
 
 - The Homebrew cask verifies the signature and strips quarantine from a `postflight_steps` stanza instead of the Ruby `postflight` block Homebrew 7 deprecated, so `brew upgrade` no longer warns. The release workflow pins `release-swift.yml` at yasyf/homebrew-tap@88e01cc, which renders it.
@@ -128,7 +140,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial scaffolding: the `CCSudo` library, the `cc-sudo` CLI skeleton with a `hello` smoke command, CI, and the Homebrew cask release pipeline.
 
-[Unreleased]: https://github.com/yasyf/cc-sudo/compare/v0.12.2...HEAD
+[Unreleased]: https://github.com/yasyf/cc-sudo/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/yasyf/cc-sudo/compare/v0.12.2...v0.13.0
 [0.12.2]: https://github.com/yasyf/cc-sudo/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/yasyf/cc-sudo/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/yasyf/cc-sudo/compare/v0.11.1...v0.12.0

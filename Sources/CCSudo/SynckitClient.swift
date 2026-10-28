@@ -100,7 +100,7 @@ public protocol SynckitConsentClient: Sendable {
     func requestConsent(_ params: SynckitConsentParams) async throws -> SynckitConsentResult
 }
 
-/// A persistent DaemonKit protocol-2 client for synckitd's business lane.
+/// A persistent DaemonKit protocol-3 client for synckitd's schema-gated session.
 public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
     public enum ClientError: Error, Sendable, CustomStringConvertible {
         case unavailable(String)
@@ -122,7 +122,7 @@ public final class SynckitClient: SynckitConsentClient, @unchecked Sendable {
         }
     }
 
-    public static let requiredRuntimeVersion = "0.40.0"
+    public static let requiredRuntimeVersion = "0.48.0"
     public static let wireBuild =
         "com.yasyf.synckit.rpc/4d9aa242cd68e09b6516b1f31361cc9f2496e5ac1028a9910788fe90773578e2/v1"
     public static let serveLabel = "com.github.yasyf.synckit.serve"
@@ -301,7 +301,6 @@ private actor SynckitSession {
                 let client = try await SocketClient(
                     path: socketPath,
                     schema: SynckitClient.wireBuild,
-                    lane: .business,
                     configuration: .init(
                         maximumFrameBytes: SynckitClient.maximumFrameBytes,
                         handshakeTimeout: min(deadline, 10),

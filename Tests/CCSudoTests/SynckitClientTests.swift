@@ -179,7 +179,7 @@ struct SynckitClientTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["CC_SUDO_SYNCKITD_HOME"] != nil))
     func publishedRuntimeAnswersStatus() async throws {
         let home = try #require(ProcessInfo.processInfo.environment["CC_SUDO_SYNCKITD_HOME"])
-        #expect(SynckitClient.requiredRuntimeVersion == "0.40.0")
+        #expect(SynckitClient.requiredRuntimeVersion == "0.48.0")
         let socketPath = try SynckitClient.socketPath(home: URL(fileURLWithPath: home, isDirectory: true))
         try await withSynckitClient(SynckitClient(socketPath: socketPath, deadline: 5)) { client in
             let status = try await client.status()
@@ -187,7 +187,7 @@ struct SynckitClientTests {
         }
     }
 
-    @Test func socketPathMatchesTheProtocol2DaemonLayout() async throws {
+    @Test func socketPathMatchesTheProtocol3DaemonLayout() async throws {
         let fixture = try await SynckitFixture(reply: #"{"ok":true,"result":null}"#)
         defer { fixture.close() }
         #expect(try SynckitClient.socketPath(home: fixture.home) == fixture.socketPath)
@@ -209,7 +209,7 @@ struct SynckitClientTests {
         }
     }
 
-    @Test func consentRequestRoundTripsOverTheProtocol2BusinessLane() async throws {
+    @Test func consentRequestRoundTripsOverTheProtocol3Session() async throws {
         try await withFixture(reply: """
         {"ok":true,"result":{"verdict":"approved","approved_by":"studio","routed":true,"cached":false,\
         "attestation":{"key_id":"kid","sig":"c2ln","signed_by":"studio"}}}
