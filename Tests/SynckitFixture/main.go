@@ -1,5 +1,5 @@
 // Command synckit-fixture serves synckitd's business lane on a real daemonkit
-// protocol-2 socket under -home, answering every synckit.rpc.call with the
+// protocol-3 socket under -home, answering every synckit.rpc.call with the
 // -reply body. It prints READY <socket> once a call round-trips, then one
 // REQUEST <op> <base64 body> line per call, and exits on stdin EOF.
 package main
@@ -50,7 +50,6 @@ func run() error {
 	spec := daemonkit.Daemon{
 		Label:    daemonkit.Label(label),
 		Schemas:  []daemonkit.Schema{rpc.WireBuild},
-		Trust:    daemonkit.Trust{Serving: daemonkit.ServingSameUser()},
 		Shutdown: daemonkit.Grace(5 * time.Second),
 		MaxFrame: rpc.MaxFrame,
 	}
