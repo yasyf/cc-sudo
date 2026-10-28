@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The Homebrew cask verifies the signature and strips quarantine from a `postflight_steps` stanza instead of the Ruby `postflight` block Homebrew 7 deprecated, so `brew upgrade` no longer warns. The release workflow pins `release-swift.yml` at yasyf/homebrew-tap@88e01cc, which renders it.
+
 ## [0.12.2] - 2026-10-23
 
 ### Fixed
