@@ -28,5 +28,5 @@ jobs:
           scripts/verify-release-version.sh "$bin/cc-sudo" "$GITHUB_REF_NAME"
   release:
     needs: version-contract
-    uses: yasyf/homebrew-tap/.github/workflows/release-swift.yml@5327f1e1085c1b55ea8908b038a499a19db29e06
+    uses: yasyf/homebrew-tap/.github/workflows/release-swift.yml@8a6460307da4c3aadf12f38e295ee48fdfc5f8fc
     secrets: inherit
