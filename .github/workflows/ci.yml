@@ -19,6 +19,7 @@ jobs:
   test:
     if: github.event_name != 'pull_request'
     runs-on: macos-26
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/cache@v5
