@@ -15,7 +15,7 @@ struct Root: AsyncParsableCommand {
         version: Version.current,
         subcommands: [
             Run.self, Exec.self, PromptHelper.self, MCP.self, Install.self, Trust.self,
-            Uninstall.self, DoctorCommand.self, SynckitBridge.self, Hello.self,
+            Untrust.self, Uninstall.self, DoctorCommand.self, SynckitBridge.self, Hello.self,
         ]
     )
 }
@@ -176,13 +176,39 @@ struct Install: AsyncParsableCommand {
 
 struct Trust: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Enroll a peer's public key for routed approvals (requires sudo; trusts ssh at enrollment time only)."
+        abstract: "Enroll a peer Mac's public key over ssh, or a phone by QR code, for routed approvals (requires sudo; trusts the channel at enrollment time only)."
     )
 
     @Argument(help: "The peer's mesh host name.")
-    var peer: String
+    var peer: String?
+
+    @Option(help: "Enroll the cc-sudo Approver app on an iPhone under this name instead.")
+    var phone: String?
+
+    func validate() throws {
+        guard (peer == nil) != (phone == nil) else {
+            throw ValidationError("name a peer Mac or pass --phone <name>, not both")
+        }
+    }
 
     func run() async throws {
+        if let phone {
+            do {
+                let record = try await PhoneTrust().trust(phone: phone)
+                print("enrolled phone \(record.name) (\(record.device)) key \(record.keyID)")
+            } catch PhoneTrust.PhoneTrustError.notRoot {
+                throw ValidationError("trust requires root: sudo cc-sudo trust --phone \(phone)")
+            } catch PhoneTrust.PhoneTrustError.noSudoInvoker {
+                throw ValidationError("trust --phone runs tailscale as the invoking user; run it through sudo: sudo cc-sudo trust --phone \(phone)")
+            } catch {
+                exitClassifying(error)
+            }
+        } else if let peer {
+            try await trust(peer: peer)
+        }
+    }
+
+    func trust(peer: String) async throws {
         do {
             let keyID = try await PeerTrust().trust(peer: peer)
             print("enrolled peer \(peer) key \(keyID)")
@@ -190,6 +216,31 @@ struct Trust: AsyncParsableCommand {
             throw ValidationError("trust requires root: sudo cc-sudo trust \(peer)")
         } catch PeerTrust.PeerTrustError.noSudoInvoker {
             throw ValidationError("trust fetches over the invoking user's ssh; run it through sudo: sudo cc-sudo trust \(peer)")
+        } catch {
+            exitClassifying(error)
+        }
+    }
+}
+
+struct Untrust: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Remove an enrolled peer Mac or phone from this Mac's approvers (requires sudo)."
+    )
+
+    @Argument(help: "The peer or phone name given to 'cc-sudo trust'.")
+    var name: String
+
+    func run() async throws {
+        guard geteuid() == 0 else {
+            throw ValidationError("untrust requires root: sudo cc-sudo untrust \(name)")
+        }
+        do {
+            guard try TrustStore().remove(name: name) else {
+                throw ValidationError("\(name) is not enrolled")
+            }
+            print("removed \(name)")
+        } catch let error as ValidationError {
+            throw error
         } catch {
             exitClassifying(error)
         }

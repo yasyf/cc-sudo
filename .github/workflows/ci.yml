@@ -20,7 +20,7 @@ jobs:
   test:
     if: github.event_name != 'pull_request'
     runs-on: macos-26
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - uses: actions/cache@v5
@@ -51,3 +51,9 @@ jobs:
         run: scripts/swift-test.sh
       - name: Verify synckitd runtime interop
         run: scripts/verify-synckit-interop.sh
+      - name: Build the phone approver app for iOS
+        run: |
+          command -v xcodegen >/dev/null || brew install xcodegen
+          xcodegen generate --spec Apps/Approver/project.yml
+          xcodebuild build -project Apps/Approver/Approver.xcodeproj -scheme Approver \
+            -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO -quiet

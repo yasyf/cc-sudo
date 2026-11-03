@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `sudo cc-sudo trust --phone <name>` enrolls the cc-sudo Approver iPhone app: it
+  draws a QR code, takes the phone's Secure Enclave keys over the Mac's tailnet
+  address in a commit-then-reveal exchange, names the device by
+  `tailscale whois` (run as the invoking user, never root), refuses anything but
+  an iPhone, and enrolls only after you type the code the phone shows, a digest
+  of the whole exchange. The approval key lands at
+  `/etc/cc-sudo/trusted/peers/<name>.pub`, verified exactly like a peer Mac's;
+  the transport key, push token and tailnet node id land in
+  `phones/<name>.json` for synckitd's phone approver.
+- `sudo cc-sudo untrust <name>` removes an enrolled peer Mac or phone.
+- `cc-sudo doctor` lists enrolled phones.
+- The `CCSudoPhone` library: the enrollment and approval wire, the phone's
+  signed bytes, the confirmation code, and the script-runner warning rule.
+- `Apps/Approver`, the SwiftUI phone app (XcodeGen project), built for iOS in CI.
+
+### Changed
+- Requires authkit 0.3.0 for the `AuthKitSubject` library.
+
 ## [0.13.0] - 2026-10-28
 
 ### Changed

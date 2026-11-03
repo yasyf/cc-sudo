@@ -38,6 +38,7 @@ public struct Doctor: Sendable {
         results.append(synckit)
         results.append(selfKeyCheck())
         results.append(peerKeysCheck())
+        results.append(phonesCheck())
         results.append(originIdentityCheck(meshSelf: mesh?.meshSelf))
         results.append(promptPathCheck())
         if probePrompt {
@@ -147,6 +148,27 @@ public struct Doctor: Sendable {
         } catch {
             return CheckResult(name: "self key", status: .fail, detail: String(describing: error))
         }
+    }
+
+    func phonesCheck() -> CheckResult {
+        let phones: [PhoneRecord]
+        do {
+            phones = try store.enrolledPhones()
+        } catch {
+            return CheckResult(name: "phones", status: .fail, detail: String(describing: error))
+        }
+        guard !phones.isEmpty else {
+            return CheckResult(name: "phones", status: .info, detail: "none enrolled ('sudo cc-sudo trust --phone <name>')")
+        }
+        var failed = false
+        let details = phones.map { phone in
+            guard (try? store.peerKey(host: phone.name)) != nil else {
+                failed = true
+                return "\(phone.name): routing record without peers/\(phone.name).pub"
+            }
+            return "\(phone.name)=\(phone.device) node \(phone.nodeID) key \(phone.keyID.prefix(12))…"
+        }
+        return CheckResult(name: "phones", status: failed ? .fail : .pass, detail: details.joined(separator: ", "))
     }
 
     func peerKeysCheck() -> CheckResult {
