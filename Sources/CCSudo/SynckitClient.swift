@@ -10,6 +10,8 @@ public struct SynckitConsentParams: Codable, Sendable {
     public let nonce: String
     public let ttlMS: Int
     public let localOnly: Bool
+    public var approvers: [String]?
+    public var phones: [PhoneRecord]?
 
     enum CodingKeys: String, CodingKey {
         case client
@@ -19,6 +21,8 @@ public struct SynckitConsentParams: Codable, Sendable {
         case nonce
         case ttlMS = "ttl_ms"
         case localOnly = "local_only"
+        case approvers
+        case phones
     }
 }
 
