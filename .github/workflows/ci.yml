@@ -47,13 +47,13 @@ jobs:
         run: swift build
       - name: Verify built executable version
         run: scripts/verify-release-version.sh "$(swift build --show-bin-path)/cc-sudo"
-      - name: Test
-        run: scripts/swift-test.sh
-      - name: Verify synckitd runtime interop
-        run: scripts/verify-synckit-interop.sh
       - name: Build the phone approver app for iOS
         run: |
           command -v xcodegen >/dev/null || brew install xcodegen
           xcodegen generate --spec Apps/Approver/project.yml
           xcodebuild build -project Apps/Approver/Approver.xcodeproj -scheme Approver \
             -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO -quiet
+      - name: Test
+        run: scripts/swift-test.sh
+      - name: Verify synckitd runtime interop
+        run: scripts/verify-synckit-interop.sh
