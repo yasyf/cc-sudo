@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Requires authkit 0.3.0 for the `AuthKitSubject` library.
+- A routed consent names synckitd only the peers this Mac enrolled
+  (`approvers`) and its enrolled phones (`phones`), so argv and nonce never
+  reach a mesh peer whose signature the verifier would reject, and a phone is
+  asked once no Mac approves (synckit with the phone approver).
 
 ## [0.13.0] - 2026-10-28
 

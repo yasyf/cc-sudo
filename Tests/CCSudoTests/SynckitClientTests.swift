@@ -260,7 +260,9 @@ struct SynckitClientTests {
         try await withSynckitClient(client) { client in
             let source = SynckitConsentSource(
                 client: client,
-                selfIdentity: "laptop"
+                selfIdentity: "laptop",
+                approvers: [],
+                phones: []
             )
             do {
                 _ = try await source.obtainSignature(
@@ -276,13 +278,36 @@ struct SynckitClientTests {
         }
     }
 
+    @Test func theSourceOffersOnlyEnrolledApproversAndItsPhones() async throws {
+        let phone = PhoneRecord(
+            name: "yphone", nodeID: "nPHONE", device: "yphone.ts.net.", pushToken: "apns", transportKey: "tk", keyID: "kid"
+        )
+        try await withFixture(reply: #"{"ok":true,"result":{"verdict":"unavailable"}}"#) { client, fixture in
+            let source = SynckitConsentSource(client: client, selfIdentity: "laptop", approvers: ["studio"], phones: [phone])
+            await #expect(throws: ConsentError.self) {
+                _ = try await source.obtainSignature(ConsentRequest(argv: ["ls"], nonce: Data(repeating: 1, count: 24)))
+            }
+            let request = try await fixture.request()
+            let sent = try JSONSerialization.jsonObject(with: request.payload) as? [String: Any]
+            let sentParams = try #require(sent?["params"] as? [String: Any])
+            #expect(sentParams["approvers"] as? [String] == ["studio"])
+            let phones = try #require(sentParams["phones"] as? [[String: String]])
+            #expect(phones.map { $0["name"] } == ["yphone"])
+            #expect(phones.first?["node_id"] == "nPHONE")
+            #expect(phones.first?["push_token"] == "apns")
+            #expect(phones.first?["transport_key"] == "tk")
+        }
+    }
+
     // MARK: - SynckitConsentSource verdict mapping over the real socket
 
     private func consent(reply: String, selfIdentity: String = "laptop") async throws -> SignedConsent {
         try await withFixture(reply: reply) { client, _ in
             let source = SynckitConsentSource(
                 client: client,
-                selfIdentity: selfIdentity
+                selfIdentity: selfIdentity,
+                approvers: [],
+                phones: []
             )
             return try await source.obtainSignature(
                 ConsentRequest(argv: ["dscacheutil", "-flushcache"], nonce: Data(repeating: 2, count: 24))

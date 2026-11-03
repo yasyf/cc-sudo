@@ -29,7 +29,7 @@ public struct Verifier: Sendable {
     public struct Dependencies: Sendable {
         public var generateNonce: @Sendable () throws -> Data
         public var pinHelper: @Sendable () throws -> URL
-        public var consentSource: @Sendable (_ pinnedHelper: URL) -> any ConsentSource
+        public var consentSource: @Sendable (_ pinnedHelper: URL) throws -> any ConsentSource
         public var selfKey: @Sendable () throws -> Data
         public var peerKey: @Sendable (_ host: String) throws -> Data
         public var originIdentity: @Sendable () throws -> String
@@ -38,7 +38,7 @@ public struct Verifier: Sendable {
         public init(
             generateNonce: @escaping @Sendable () throws -> Data,
             pinHelper: @escaping @Sendable () throws -> URL,
-            consentSource: @escaping @Sendable (_ pinnedHelper: URL) -> any ConsentSource,
+            consentSource: @escaping @Sendable (_ pinnedHelper: URL) throws -> any ConsentSource,
             selfKey: @escaping @Sendable () throws -> Data,
             peerKey: @escaping @Sendable (_ host: String) throws -> Data,
             originIdentity: @escaping @Sendable () throws -> String,
@@ -72,7 +72,7 @@ public struct Verifier: Sendable {
 
         let nonce = try dependencies.generateNonce()
         let pinnedHelper = try dependencies.pinHelper()
-        let source = dependencies.consentSource(pinnedHelper)
+        let source = try dependencies.consentSource(pinnedHelper)
         let consent = try await source.obtainSignature(ConsentRequest(argv: argv, nonce: nonce))
 
         let publicKey: Data

@@ -53,12 +53,15 @@ public extension Verifier.Dependencies {
             generateNonce: { try Nonce.generate() },
             pinHelper: { try HelperTrust.stagedHelperBinary() },
             consentSource: { _ in
-                let synckit = SynckitConsentSource(
+                let store = TrustStore()
+                let synckit = try SynckitConsentSource(
                     client: SynckitBridgeClient(
                         home: PromptStrategy.socketHome(),
                         userID: liveSocketUserID()
                     ),
-                    selfIdentity: (try? OriginIdentity.read()) ?? OriginIdentity.defaultIdentity()
+                    selfIdentity: (try? OriginIdentity.read()) ?? OriginIdentity.defaultIdentity(),
+                    approvers: store.enrolledPeers(),
+                    phones: store.enrolledPhones()
                 )
                 switch PromptStrategy.select() {
                 case let .localThenSynckit(console):

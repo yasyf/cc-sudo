@@ -8,7 +8,9 @@ import os
 /// signature opaquely; the root verifier recomputes and checks everything.
 ///
 /// `ttl_ms` is pinned to 0 so every call prompts, and `local_only` stays false
-/// so a locked Mac routes to a live peer.
+/// so a locked Mac routes to a live peer. `approvers` names only the peers
+/// this verifier enrolled, so argv and nonce never reach any other mesh peer,
+/// and `phones` are asked once no Mac approves.
 public struct SynckitConsentSource: ConsentSource {
     static let clientName = "cc-sudo"
 
@@ -17,10 +19,14 @@ public struct SynckitConsentSource: ConsentSource {
     /// local, non-routed approval comes back signed_by that name and verifies
     /// against the self key.
     let selfIdentity: String
+    let approvers: [String]
+    let phones: [PhoneRecord]
 
-    public init(client: any SynckitConsentClient, selfIdentity: String) {
+    public init(client: any SynckitConsentClient, selfIdentity: String, approvers: [String], phones: [PhoneRecord]) {
         self.client = client
         self.selfIdentity = selfIdentity
+        self.approvers = approvers
+        self.phones = phones
     }
 
     public func obtainSignature(_ request: ConsentRequest) async throws -> SignedConsent {
@@ -31,7 +37,9 @@ public struct SynckitConsentSource: ConsentSource {
             argv: request.argv,
             nonce: request.nonce.base64EncodedString(),
             ttlMS: 0,
-            localOnly: false
+            localOnly: false,
+            approvers: approvers,
+            phones: phones
         )
         let result: SynckitConsentResult
         do {
