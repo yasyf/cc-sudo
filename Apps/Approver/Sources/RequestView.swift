@@ -88,7 +88,8 @@ struct RequestView: View {
 
     private func load() async {
         do {
-            phase = try await .ready(ApprovalClient(route: route).fetch())
+            let request = try await ApprovalClient(route: route).fetch()
+            phase = .ready(request)
         } catch {
             phase = .failed("Could not fetch the request from \(route.mac.host): \(error.localizedDescription) Is Tailscale on?")
         }
