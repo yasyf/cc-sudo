@@ -5,7 +5,9 @@ struct EnrolledMac: Codable, Hashable, Identifiable {
     let mac: String
     let host: String
 
-    var id: String { mac }
+    var id: String {
+        mac
+    }
 }
 
 struct Route: Identifiable, Equatable {
@@ -13,7 +15,9 @@ struct Route: Identifiable, Equatable {
     let requestID: String
     let base: URL
 
-    var id: String { requestID }
+    var id: String {
+        requestID
+    }
 }
 
 @MainActor

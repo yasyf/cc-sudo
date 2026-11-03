@@ -99,7 +99,8 @@ public struct TrustStore: Sendable {
     public func remove(name: String) throws -> Bool {
         var removed = false
         for url in try [peerKeyURL(host: name), phoneRecordURL(name: name)]
-            where FileManager.default.fileExists(atPath: url.path()) {
+            where FileManager.default.fileExists(atPath: url.path())
+        {
             try FileManager.default.removeItem(at: url)
             removed = true
         }

@@ -96,24 +96,7 @@ public struct PhoneTrust: Sendable {
     }
 
     func selfNode(tailscale: String, invoker: uid_t) async throws -> SelfNode {
-        struct Status: Decodable {
-            struct Node: Decodable {
-                let dnsName: String
-                let addresses: [String]
-
-                enum CodingKeys: String, CodingKey {
-                    case dnsName = "DNSName"
-                    case addresses = "TailscaleIPs"
-                }
-            }
-
-            let node: Node
-
-            enum CodingKeys: String, CodingKey {
-                case node = "Self"
-            }
-        }
-        let status = try await JSONDecoder().decode(Status.self, from: run(tailscale, invoker: invoker, ["status", "--json"]))
+        let status = try await JSONDecoder().decode(TailscaleStatus.self, from: run(tailscale, invoker: invoker, ["status", "--json"]))
         guard let address = status.node.addresses.first(where: { $0.contains(".") }) else {
             throw PhoneTrustError.noTailnetAddress
         }
@@ -122,34 +105,7 @@ public struct PhoneTrust: Sendable {
     }
 
     func whois(tailscale: String, invoker: uid_t, address: String) async throws -> TailnetDevice {
-        struct WhoIs: Decodable {
-            struct Node: Decodable {
-                struct HostInfo: Decodable {
-                    let os: String
-
-                    enum CodingKeys: String, CodingKey {
-                        case os = "OS"
-                    }
-                }
-
-                let stableID: String
-                let name: String
-                let hostInfo: HostInfo
-
-                enum CodingKeys: String, CodingKey {
-                    case stableID = "StableID"
-                    case name = "Name"
-                    case hostInfo = "Hostinfo"
-                }
-            }
-
-            let node: Node
-
-            enum CodingKeys: String, CodingKey {
-                case node = "Node"
-            }
-        }
-        let who = try await JSONDecoder().decode(WhoIs.self, from: run(tailscale, invoker: invoker, ["whois", "--json", address]))
+        let who = try await JSONDecoder().decode(TailscaleWhoIs.self, from: run(tailscale, invoker: invoker, ["whois", "--json", address]))
         return TailnetDevice(nodeID: who.node.stableID, name: who.node.name, os: who.node.hostInfo.os)
     }
 
@@ -195,11 +151,11 @@ actor EnrollmentSession {
         parameters.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(address), port: .any)
         let listener = try NWListener(using: parameters)
         self.listener = listener
-        listener.newConnectionHandler = { connection in
+        listener.newConnectionHandler = { @Sendable connection in
             Task { await self.accept(connection) }
         }
         return try await withCheckedThrowingContinuation { continuation in
-            listener.stateUpdateHandler = { state in
+            listener.stateUpdateHandler = { @Sendable state in
                 switch state {
                 case .ready:
                     listener.stateUpdateHandler = nil
@@ -223,13 +179,19 @@ actor EnrollmentSession {
     }
 
     func firstPhone() async throws -> TailnetDevice {
-        if let failure { throw failure }
-        if let held = enrollment.committed, held.reveal != nil { return held.device }
+        if let failure {
+            throw failure
+        }
+        if let held = enrollment.committed, held.reveal != nil {
+            return held.device
+        }
         return try await withCheckedThrowingContinuation { waiters.append($0) }
     }
 
     func confirm(typed: String) throws -> (record: PhoneRecord, publicKey: Data) {
-        if let failure { throw failure }
+        if let failure {
+            throw failure
+        }
         return try enrollment.confirm(typed: typed)
     }
 
@@ -354,25 +316,71 @@ enum TerminalQR {
         }
         guard drawn else { throw PhoneTrust.PhoneTrustError.qrUnavailable }
         let quiet = 2
-        func dark(_ x: Int, _ y: Int) -> Bool {
-            let (px, py) = (x - quiet, y - quiet)
-            guard (0 ..< size).contains(px), (0 ..< size).contains(py) else { return false }
-            return pixels[py * size + px] < 128
+        func dark(column: Int, row: Int) -> Bool {
+            let (pixelColumn, pixelRow) = (column - quiet, row - quiet)
+            guard (0 ..< size).contains(pixelColumn), (0 ..< size).contains(pixelRow) else { return false }
+            return pixels[pixelRow * size + pixelColumn] < 128
         }
         let span = size + 2 * quiet
         var rows: [String] = []
-        for y in stride(from: 0, to: span, by: 2) {
-            var row = "\u{1B}[30;47m"
-            for x in 0 ..< span {
-                switch (dark(x, y), dark(x, y + 1)) {
-                case (true, true): row += "█"
-                case (true, false): row += "▀"
-                case (false, true): row += "▄"
-                case (false, false): row += " "
+        for top in stride(from: 0, to: span, by: 2) {
+            var line = "\u{1B}[30;47m"
+            for column in 0 ..< span {
+                switch (dark(column: column, row: top), dark(column: column, row: top + 1)) {
+                case (true, true): line += "█"
+                case (true, false): line += "▀"
+                case (false, true): line += "▄"
+                case (false, false): line += " "
                 }
             }
-            rows.append(row + "\u{1B}[0m")
+            rows.append(line + "\u{1B}[0m")
         }
         return rows.joined(separator: "\n")
+    }
+}
+
+private struct TailscaleStatus: Decodable {
+    struct Node: Decodable {
+        let dnsName: String
+        let addresses: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case dnsName = "DNSName"
+            case addresses = "TailscaleIPs"
+        }
+    }
+
+    let node: Node
+
+    enum CodingKeys: String, CodingKey {
+        case node = "Self"
+    }
+}
+
+private struct TailscaleWhoIs: Decodable {
+    struct Node: Decodable {
+        struct HostInfo: Decodable {
+            let os: String
+
+            enum CodingKeys: String, CodingKey {
+                case os = "OS"
+            }
+        }
+
+        let stableID: String
+        let name: String
+        let hostInfo: HostInfo
+
+        enum CodingKeys: String, CodingKey {
+            case stableID = "StableID"
+            case name = "Name"
+            case hostInfo = "Hostinfo"
+        }
+    }
+
+    let node: Node
+
+    enum CodingKeys: String, CodingKey {
+        case node = "Node"
     }
 }

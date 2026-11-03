@@ -146,10 +146,10 @@ public struct PhoneEnrollment: Sendable {
     }
 }
 
-extension TrustStore {
+public extension TrustStore {
     /// Writes a confirmed phone's key beside the Mac peers' and its routing
     /// record, both root-owned and world-readable.
-    public func enroll(phone record: PhoneRecord, publicKey: Data) throws {
+    func enroll(phone record: PhoneRecord, publicKey: Data) throws {
         for directory in [peersDirectory, phonesDirectory] {
             try FileManager.default.createDirectory(
                 at: directory,
