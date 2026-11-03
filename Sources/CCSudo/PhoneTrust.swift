@@ -223,13 +223,19 @@ actor EnrollmentSession {
     }
 
     func firstPhone() async throws -> TailnetDevice {
-        if let failure { throw failure }
-        if let held = enrollment.committed, held.reveal != nil { return held.device }
+        if let failure {
+            throw failure
+        }
+        if let held = enrollment.committed, held.reveal != nil {
+            return held.device
+        }
         return try await withCheckedThrowingContinuation { waiters.append($0) }
     }
 
     func confirm(typed: String) throws -> (record: PhoneRecord, publicKey: Data) {
-        if let failure { throw failure }
+        if let failure {
+            throw failure
+        }
         return try enrollment.confirm(typed: typed)
     }
 
@@ -354,24 +360,24 @@ enum TerminalQR {
         }
         guard drawn else { throw PhoneTrust.PhoneTrustError.qrUnavailable }
         let quiet = 2
-        func dark(_ x: Int, _ y: Int) -> Bool {
-            let (px, py) = (x - quiet, y - quiet)
-            guard (0 ..< size).contains(px), (0 ..< size).contains(py) else { return false }
-            return pixels[py * size + px] < 128
+        func dark(column: Int, row: Int) -> Bool {
+            let (pixelColumn, pixelRow) = (column - quiet, row - quiet)
+            guard (0 ..< size).contains(pixelColumn), (0 ..< size).contains(pixelRow) else { return false }
+            return pixels[pixelRow * size + pixelColumn] < 128
         }
         let span = size + 2 * quiet
         var rows: [String] = []
-        for y in stride(from: 0, to: span, by: 2) {
-            var row = "\u{1B}[30;47m"
-            for x in 0 ..< span {
-                switch (dark(x, y), dark(x, y + 1)) {
-                case (true, true): row += "█"
-                case (true, false): row += "▀"
-                case (false, true): row += "▄"
-                case (false, false): row += " "
+        for top in stride(from: 0, to: span, by: 2) {
+            var line = "\u{1B}[30;47m"
+            for column in 0 ..< span {
+                switch (dark(column: column, row: top), dark(column: column, row: top + 1)) {
+                case (true, true): line += "█"
+                case (true, false): line += "▀"
+                case (false, true): line += "▄"
+                case (false, false): line += " "
                 }
             }
-            rows.append(row + "\u{1B}[0m")
+            rows.append(line + "\u{1B}[0m")
         }
         return rows.joined(separator: "\n")
     }

@@ -24,7 +24,9 @@ enum SigningKey {
         case approver
         case transport
 
-        var tag: Data { Data("com.yasyf.cc-sudo.approver.\(rawValue)".utf8) }
+        var tag: Data {
+            Data("com.yasyf.cc-sudo.approver.\(rawValue)".utf8)
+        }
 
         var flags: SecAccessControlCreateFlags {
             switch self {
@@ -95,7 +97,10 @@ enum SigningKey {
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         switch status {
         case errSecSuccess:
-            return (item as! SecKey)
+            guard let item, CFGetTypeID(item) == SecKeyGetTypeID() else {
+                throw KeyError.security("keychain returned something other than a key")
+            }
+            return unsafeDowncast(item, to: SecKey.self)
         case errSecItemNotFound:
             return nil
         default:

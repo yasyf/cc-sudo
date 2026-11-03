@@ -191,10 +191,10 @@ public enum ScriptRunner {
     }
 }
 
-extension PendingApproval {
+public extension PendingApproval {
     /// Where the asking Mac's synckitd serves a parked request on its tailnet
     /// listener: GET fetches it, POST takes the phone's ApprovalAnswer.
-    public static func path(id: String) -> String {
+    static func path(id: String) -> String {
         "/cc-sudo/phone/requests/\(id)"
     }
 }
