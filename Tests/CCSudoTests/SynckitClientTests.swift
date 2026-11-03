@@ -120,12 +120,27 @@ private final class SynckitFixture: @unchecked Sendable {
         }
     }
 
+    // Closing stdin asks the fixture to drain and exit; one still running after
+    // exitGrace is killed, and teardown never waits past killGrace more, because
+    // an unbounded waitUntilExit here has parked the whole test run on CI.
     private static func stop(process: Process, stdin: Pipe, home: URL) {
         try? stdin.fileHandleForWriting.close()
-        if process.isRunning {
-            process.waitUntilExit()
+        if !waitForExit(process, within: exitGrace) {
+            kill(process.processIdentifier, SIGKILL)
+            _ = waitForExit(process, within: killGrace)
         }
         try? FileManager.default.removeItem(at: home)
+    }
+
+    private static let exitGrace: TimeInterval = 10
+    private static let killGrace: TimeInterval = 5
+
+    private static func waitForExit(_ process: Process, within grace: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(grace)
+        while process.isRunning, Date() < deadline {
+            usleep(50000)
+        }
+        return !process.isRunning
     }
 
     func request() async throws -> Request {

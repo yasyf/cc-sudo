@@ -20,7 +20,7 @@ for _ in $(seq 1 "${CC_SUDO_TEST_STALL_SECONDS:-300}"); do
     sleep 1
 done
 echo "::error::swift test still running after ${CC_SUDO_TEST_STALL_SECONDS:-300}s; sampling the test processes" >&2
-for test_pid in $(pgrep -f 'swiftpm-testing-helper|xctest|cc-sudoPackageTests'); do
+for test_pid in $(pgrep -f 'swiftpm-testing-helper|xctest|cc-sudoPackageTests|synckit-fixture'); do
     sample "$test_pid" 3 2>&1 | head -400 >&2 || true
 done
 kill "$pid"
