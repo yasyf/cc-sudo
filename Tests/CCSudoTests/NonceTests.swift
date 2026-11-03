@@ -30,6 +30,6 @@ import Testing
     let results = await Doctor(runner: FakeRunner { _, _ in .exit(0) }).checks()
     #expect(results.map(\.name) == [
         "verifier", "sudoers", "authkit pin", "synckitd",
-        "self key", "peer keys", "origin identity", "prompt path",
+        "self key", "peer keys", "phones", "origin identity", "prompt path",
     ])
 }
