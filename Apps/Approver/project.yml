@@ -1,0 +1,41 @@
+name: Approver
+options:
+  bundleIdPrefix: com.yasyf.cc-sudo
+  deploymentTarget:
+    iOS: "18.0"
+packages:
+  CCSudo:
+    path: ../..
+  authkit:
+    url: https://github.com/yasyf/authkit
+    from: 0.3.0
+targets:
+  Approver:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    dependencies:
+      - package: CCSudo
+        product: CCSudoPhone
+      - package: authkit
+        product: AuthKitSubject
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: cc-sudo
+        NSCameraUsageDescription: Scan the enrollment code a Mac shows for sudo cc-sudo trust --phone.
+        NSFaceIDUsageDescription: Face ID unlocks the key that approves one command as root on your Mac.
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+    entitlements:
+      path: Sources/Approver.entitlements
+      properties:
+        aps-environment: production
+        com.apple.developer.usernotifications.time-sensitive: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.yasyf.cc-sudo.approver
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: 6.0
+        TARGETED_DEVICE_FAMILY: 1

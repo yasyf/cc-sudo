@@ -62,6 +62,8 @@ Over SSH, in tmux, or on a locked Mac, the prompt routes to a live peer you've e
 | `cc-sudo run -- <cmd>` | Run a command as root after one Touch ID tap; stdio and exit status pass through. |
 | `cc-sudo install` | Lay down the root-owned verifier, sudoers rule, and enrolled Secure-Enclave key (requires sudo). |
 | `cc-sudo trust <peer>` | Enroll a peer's public key for routed approvals (requires sudo). |
+| `cc-sudo trust --phone <name>` | Enroll the cc-sudo Approver iPhone app by QR code over Tailscale (requires sudo). |
+| `cc-sudo untrust <name>` | Remove an enrolled peer Mac or phone (requires sudo). |
 | `cc-sudo uninstall` | Remove the verifier, sudoers rule, and trust store (requires sudo). |
 | `cc-sudo doctor [--probe-prompt]` | Check every link of the trust chain; `--probe-prompt` fires a real consent sheet. |
 | `cc-sudo mcp` | Serve a `run_command` tool over MCP stdio for agent hosts. |

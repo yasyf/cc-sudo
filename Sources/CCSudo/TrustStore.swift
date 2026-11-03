@@ -3,7 +3,8 @@ import Foundation
 
 /// The root-owned enrolled public keys under /etc/cc-sudo/trusted: `self.pub`
 /// for this host's authkit SE key, `peers/<host>.pub` for each host enrolled
-/// via `cc-sudo trust`. Files hold the base64 X9.63 key exactly as authkit's
+/// via `cc-sudo trust`, a phone's key among them, and `phones/<name>.json` for
+/// each phone's routing record. Files hold the base64 X9.63 key exactly as authkit's
 /// keygen emitted it. A missing, stale, or malformed key HARD-FAILS the
 /// verify — there is no unsigned fallback anywhere.
 public struct TrustStore: Sendable {
@@ -32,6 +33,15 @@ public struct TrustStore: Sendable {
 
     public var peersDirectory: URL {
         directory.appending(component: "peers", directoryHint: .isDirectory)
+    }
+
+    public var phonesDirectory: URL {
+        directory.appending(component: "phones", directoryHint: .isDirectory)
+    }
+
+    public func phoneRecordURL(name: String) throws -> URL {
+        try Self.validatePeerName(name)
+        return phonesDirectory.appending(component: "\(name).json")
     }
 
     public func peerKeyURL(host: String) throws -> URL {
@@ -74,6 +84,26 @@ public struct TrustStore: Sendable {
     public func enrolledPeers() -> [String] {
         let entries = (try? FileManager.default.contentsOfDirectory(atPath: peersDirectory.path())) ?? []
         return entries.filter { $0.hasSuffix(".pub") }.map { String($0.dropLast(4)) }.sorted()
+    }
+
+    /// The enrolled phones' routing records, by name.
+    public func enrolledPhones() throws -> [PhoneRecord] {
+        let entries = (try? FileManager.default.contentsOfDirectory(atPath: phonesDirectory.path())) ?? []
+        return try entries.filter { $0.hasSuffix(".json") }.sorted().map { entry in
+            try JSONDecoder().decode(PhoneRecord.self, from: Data(contentsOf: phonesDirectory.appending(component: entry)))
+        }
+    }
+
+    /// Removes an approver's enrolled key and, for a phone, its routing
+    /// record; returns whether anything was enrolled under `name`.
+    public func remove(name: String) throws -> Bool {
+        var removed = false
+        for url in try [peerKeyURL(host: name), phoneRecordURL(name: name)]
+            where FileManager.default.fileExists(atPath: url.path()) {
+            try FileManager.default.removeItem(at: url)
+            removed = true
+        }
+        return removed
     }
 
     /// Parses and validates one enrolled key file: base64 text → X9.63 bytes

@@ -40,3 +40,8 @@ xcuserdata/
 .xcodebuildmcp/
 
 # Repo-specific ignore rules go here.
+
+# XcodeGen output for the phone approver
+Apps/Approver/Approver.xcodeproj/
+Apps/Approver/Sources/Info.plist
+Apps/Approver/Sources/Approver.entitlements
