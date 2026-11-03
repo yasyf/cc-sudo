@@ -1,4 +1,5 @@
 import CCSudoPhone
+import Security
 import SwiftUI
 import VisionKit
 
@@ -61,14 +62,15 @@ struct EnrollView: View {
         phase = .connecting
         Task {
             do {
-                let publicKey = try SigningKey.publicKey()
-                let submission = EnrollmentSubmission(
-                    code: offer.code,
-                    publicKey: publicKey.base64EncodedString(),
-                    pushToken: pushToken
+                try SigningKey.requireFaceID()
+                let reveal = try EnrollmentReveal(
+                    publicKey: SigningKey.publicKey(.approver).base64EncodedString(),
+                    transportKey: SigningKey.publicKey(.transport).base64EncodedString(),
+                    pushToken: pushToken,
+                    nonce: randomNonce()
                 )
-                try await Enroller(offer: offer, submission: submission).run {
-                    phase = .confirm(code: ConfirmationCode.of(publicKey: publicKey), mac: offer.mac)
+                try await Enroller(offer: offer, reveal: reveal).run { confirmation in
+                    phase = .confirm(code: confirmation, mac: offer.mac)
                 }
                 try model.enrolled(EnrolledMac(mac: offer.mac, host: offer.host))
                 phase = .done(offer.mac)
@@ -77,6 +79,14 @@ struct EnrollView: View {
             }
         }
     }
+}
+
+private func randomNonce() throws -> String {
+    var bytes = [UInt8](repeating: 0, count: 32)
+    guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+        throw SigningKey.KeyError.security("no randomness for the enrollment nonce")
+    }
+    return Data(bytes).base64EncodedString()
 }
 
 struct QRScanner: UIViewControllerRepresentable {

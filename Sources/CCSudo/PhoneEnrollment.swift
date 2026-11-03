@@ -18,51 +18,67 @@ public struct TailnetDevice: Sendable, Equatable {
 }
 
 /// A phone approver's root-owned routing record at
-/// /etc/cc-sudo/trusted/phones/<name>.json: synckitd pushes to `pushToken`
-/// and hands a parked request only to the tailnet node `nodeID`. Its key is
+/// /etc/cc-sudo/trusted/phones/<name>.json: synckitd pushes to `pushToken`,
+/// and serves a parked request only to the tailnet node `nodeID` when the
+/// request is signed by `transportKey`. Its signing key is
 /// `peers/<name>.pub`, enrolled exactly as a Mac peer's.
 public struct PhoneRecord: Codable, Sendable, Equatable {
     public let name: String
     public let nodeID: String
     public let device: String
     public let pushToken: String
+    public let transportKey: String
     public let keyID: String
 
     enum CodingKeys: String, CodingKey {
         case name, device
         case nodeID = "node_id"
         case pushToken = "push_token"
+        case transportKey = "transport_key"
         case keyID = "key_id"
     }
 }
 
-/// One `trust --phone` session: it holds the first phone that echoes the
-/// offer's one-time code, refuses any device that is not an iPhone, gives up
-/// when a second device echoes the code, and enrolls only once the human types
-/// the confirmation code the phone shows.
+/// One `trust --phone` session. The first iPhone that echoes the offer's
+/// one-time code commits to its keys; the Mac answers with a fresh nonce; the
+/// phone reveals what it committed to; the human types the confirmation code
+/// the phone shows. Any device that is not an iPhone, a second device echoing
+/// the code, or a reveal that breaks its commitment ends the session.
 public struct PhoneEnrollment: Sendable {
     public enum EnrollmentError: Error, Sendable, Equatable {
         case notAPhone(device: String, os: String)
         case secondDevice(device: String)
+        case wrongDevice(device: String)
+        case commitmentMismatch
         case malformedKey(String)
         case confirmationMismatch
         case noPhone
     }
 
-    struct Held: Sendable {
+    struct Committed: Sendable {
         let device: TailnetDevice
-        let publicKey: Data
-        let pushToken: String
+        let commitment: String
+        let macNonce: String
+        var reveal: EnrollmentReveal?
     }
 
     let name: String
+    let mac: String
     let code: String
-    private(set) var held: Held?
+    let makeNonce: @Sendable () throws -> Data
+    private(set) var committed: Committed?
 
-    public init(name: String, code: String) throws {
+    public init(
+        name: String,
+        mac: String,
+        code: String,
+        makeNonce: @escaping @Sendable () throws -> Data = { try Nonce.generate() }
+    ) throws {
         try TrustStore.validatePeerName(name)
         self.name = name
+        self.mac = mac
         self.code = code
+        self.makeNonce = makeNonce
     }
 
     /// A fresh 128-bit one-time code, base64url.
@@ -73,42 +89,53 @@ public struct PhoneEnrollment: Sendable {
             .replacingOccurrences(of: "=", with: "")
     }
 
-    /// Takes one submission from `device`. Returns false for a wrong code, so
-    /// the caller refuses that connection and keeps listening; throws when
-    /// the session must end.
-    public mutating func receive(_ submission: EnrollmentSubmission, from device: TailnetDevice) throws -> Bool {
-        guard Self.constantTimeEqual(submission.code, code) else { return false }
+    /// Takes a commitment from `device` and returns the Mac's nonce for it,
+    /// or nil for a wrong code, which the caller refuses while it keeps
+    /// listening; throws when the session must end.
+    public mutating func commit(_ commitment: EnrollmentCommitment, from device: TailnetDevice) throws -> String? {
+        guard Self.constantTimeEqual(commitment.code, code) else { return nil }
         guard device.os == "iOS" else { throw EnrollmentError.notAPhone(device: device.name, os: device.os) }
-        guard let key = Data(base64Encoded: submission.publicKey),
-              (try? Attestation.publicKey(fromX963: key)) != nil
-        else {
-            throw EnrollmentError.malformedKey(device.name)
-        }
-        if let held {
-            guard held.device == device, held.publicKey == key else {
-                throw EnrollmentError.secondDevice(device: device.name)
-            }
-            return true
-        }
-        held = Held(device: device, publicKey: key, pushToken: submission.pushToken)
-        return true
+        guard committed == nil else { throw EnrollmentError.secondDevice(device: device.name) }
+        let macNonce = try makeNonce().base64EncodedString()
+        committed = Committed(device: device, commitment: commitment.commitment, macNonce: macNonce)
+        return macNonce
     }
 
-    /// Checks the typed confirmation code against the held phone's key and
+    /// Takes the committed device's reveal and returns the device to name to
+    /// the human.
+    public mutating func reveal(_ reveal: EnrollmentReveal, from device: TailnetDevice) throws -> TailnetDevice {
+        guard var held = committed, held.reveal == nil else { throw EnrollmentError.noPhone }
+        guard held.device == device else { throw EnrollmentError.wrongDevice(device: device.name) }
+        guard Self.constantTimeEqual(reveal.commitment, held.commitment) else { throw EnrollmentError.commitmentMismatch }
+        for key in [reveal.publicKey, reveal.transportKey] {
+            guard let bytes = Data(base64Encoded: key), (try? Attestation.publicKey(fromX963: bytes)) != nil else {
+                throw EnrollmentError.malformedKey(device.name)
+            }
+        }
+        held.reveal = reveal
+        committed = held
+        return device
+    }
+
+    /// Checks the typed confirmation code against the whole exchange and
     /// returns what to enroll.
     public func confirm(typed: String) throws -> (record: PhoneRecord, publicKey: Data) {
-        guard let held else { throw EnrollmentError.noPhone }
-        guard typed.trimmingCharacters(in: .whitespacesAndNewlines) == ConfirmationCode.of(publicKey: held.publicKey) else {
+        guard let held = committed, let reveal = held.reveal, let publicKey = Data(base64Encoded: reveal.publicKey) else {
+            throw EnrollmentError.noPhone
+        }
+        let expected = ConfirmationCode.of(code: code, mac: mac, reveal: reveal, macNonce: held.macNonce)
+        guard typed.trimmingCharacters(in: .whitespacesAndNewlines) == expected else {
             throw EnrollmentError.confirmationMismatch
         }
         let record = PhoneRecord(
             name: name,
             nodeID: held.device.nodeID,
             device: held.device.name,
-            pushToken: held.pushToken,
-            keyID: Attestation.keyID(publicKey: held.publicKey)
+            pushToken: reveal.pushToken,
+            transportKey: reveal.transportKey,
+            keyID: Attestation.keyID(publicKey: publicKey)
         )
-        return (record, held.publicKey)
+        return (record, publicKey)
     }
 
     static func constantTimeEqual(_ lhs: String, _ rhs: String) -> Bool {

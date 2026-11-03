@@ -4,12 +4,18 @@ import CryptoKit
 import Foundation
 import Testing
 
-@Test(arguments: [
-    (Data(repeating: 1, count: 65), "415220"),
-    (Data([4] + Array(0 ..< 64)), "640413"),
-])
-func confirmationCodeIsSixDigitsOfTheKeyDigest(key: Data, expected: String) {
-    #expect(ConfirmationCode.of(publicKey: key) == expected)
+@Test func confirmationCodeAndCommitmentMatchTheirKnownAnswers() {
+    let reveal = EnrollmentReveal(publicKey: "PK", transportKey: "TK", pushToken: "apns", nonce: "Np")
+    #expect(reveal.commitment == "nHiC1clyH0xO92KgGQ6rL1qfV8apDRv2+9Fs2fRLses=")
+    #expect(ConfirmationCode.of(code: "otc", mac: "yasyf-forge", reveal: reveal, macNonce: "Nm") == "951824")
+}
+
+@Test func confirmationCodeCoversThePushTokenAndTheMacNonce() {
+    let reveal = EnrollmentReveal(publicKey: "PK", transportKey: "TK", pushToken: "apns", nonce: "Np")
+    let swapped = EnrollmentReveal(publicKey: "PK", transportKey: "TK", pushToken: "attacker", nonce: "Np")
+    let code = ConfirmationCode.of(code: "otc", mac: "yasyf-forge", reveal: reveal, macNonce: "Nm")
+    #expect(ConfirmationCode.of(code: "otc", mac: "yasyf-forge", reveal: swapped, macNonce: "Nm") != code)
+    #expect(ConfirmationCode.of(code: "otc", mac: "yasyf-forge", reveal: reveal, macNonce: "Nm2") != code)
 }
 
 @Test func phoneSignatureVerifiesAsAPeerSignatureForTheEnrolledMac() throws {
@@ -45,13 +51,23 @@ func scriptRunnersGetTheWarningBand(argv: [String], warns: Bool) {
 }
 
 @Test func wireKeysMatchTheSynckitContract() throws {
-    let submission = try JSONDecoder().decode(
-        EnrollmentSubmission.self,
-        from: Data(#"{"code":"c","public_key":"k","push_token":"t"}"#.utf8)
+    let reveal = try JSONDecoder().decode(
+        EnrollmentReveal.self,
+        from: Data(#"{"public_key":"k","transport_key":"t","push_token":"p","nonce":"n"}"#.utf8)
     )
-    #expect(submission == EnrollmentSubmission(code: "c", publicKey: "k", pushToken: "t"))
+    #expect(reveal == EnrollmentReveal(publicKey: "k", transportKey: "t", pushToken: "p", nonce: "n"))
 
     let answer = ApprovalAnswer(id: "r1", nonce: "n", verdict: .approved, keyID: "kid", sig: "s")
     let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(answer)) as? [String: String])
     #expect(object == ["id": "r1", "nonce": "n", "verdict": "approved", "key_id": "kid", "sig": "s"])
+}
+
+@Test func transportAuthBindsMethodIDAndBody() {
+    let get = TransportAuth.message(method: "GET", id: "r1", body: Data())
+    #expect(get != TransportAuth.message(method: "POST", id: "r1", body: Data()))
+    #expect(get != TransportAuth.message(method: "GET", id: "r2", body: Data()))
+    #expect(
+        TransportAuth.message(method: "POST", id: "r1", body: Data("a".utf8))
+            != TransportAuth.message(method: "POST", id: "r1", body: Data("b".utf8))
+    )
 }

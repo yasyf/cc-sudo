@@ -104,12 +104,12 @@ struct RequestView: View {
                     return
                 }
                 let message = PhoneSignature.message(nonce: nonce, argv: request.argv, mac: route.mac.mac)
-                let signature = try await SigningKey.sign(message, reason: "Run \(request.argv.first ?? "") as root on \(route.mac.mac)")
+                let signature = try await SigningKey.approve(message, reason: "Run \(request.argv.first ?? "") as root on \(route.mac.mac)")
                 answer = try ApprovalAnswer(
                     id: request.id,
                     nonce: request.nonce,
                     verdict: .approved,
-                    keyID: Attestation.keyID(publicKey: SigningKey.publicKey()),
+                    keyID: Attestation.keyID(publicKey: SigningKey.publicKey(.approver)),
                     sig: signature.base64EncodedString()
                 )
             } else {

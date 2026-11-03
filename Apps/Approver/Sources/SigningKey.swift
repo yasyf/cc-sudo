@@ -2,24 +2,49 @@ import Foundation
 import LocalAuthentication
 import Security
 
-/// The phone's approver key: P-256, made inside the Secure Enclave, usable
-/// only after a Face ID match against the faces enrolled when it was made.
-/// Each signature evaluates a fresh LAContext, so one look signs once.
+/// The phone's two Secure Enclave P-256 keys. `approver` signs approvals and
+/// is usable only after a Face ID match against the faces enrolled when it
+/// was made; each signature evaluates a fresh LAContext, so one look signs
+/// once. `transport` needs no biometry and only proves to synckitd that a
+/// fetch or an answer comes from this phone.
 enum SigningKey {
     enum KeyError: Error, LocalizedError {
         case security(String)
+        case faceIDRequired
 
         var errorDescription: String? {
             switch self {
             case let .security(detail): detail
+            case .faceIDRequired: "cc-sudo approves only with Face ID, and Face ID is not set up on this phone."
             }
         }
     }
 
-    static let tag = Data("com.yasyf.cc-sudo.approver.signing".utf8)
+    enum Role: String {
+        case approver
+        case transport
 
-    static func publicKey() throws -> Data {
-        let key = try existing(context: nil) ?? create()
+        var tag: Data { Data("com.yasyf.cc-sudo.approver.\(rawValue)".utf8) }
+
+        var flags: SecAccessControlCreateFlags {
+            switch self {
+            case .approver: [.privateKeyUsage, .biometryCurrentSet]
+            case .transport: [.privateKeyUsage]
+            }
+        }
+    }
+
+    static func requireFaceID(_ context: LAContext = LAContext()) throws {
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error),
+              context.biometryType == .faceID
+        else {
+            throw KeyError.faceIDRequired
+        }
+    }
+
+    static func publicKey(_ role: Role) throws -> Data {
+        let key = try existing(role, context: nil) ?? create(role)
         guard let publicKey = SecKeyCopyPublicKey(key) else {
             throw KeyError.security("the Secure Enclave key has no public half")
         }
@@ -30,13 +55,25 @@ enum SigningKey {
         return bytes
     }
 
-    static func sign(_ message: Data, reason: String) async throws -> Data {
+    static func approve(_ message: Data, reason: String) async throws -> Data {
         let context = LAContext()
         defer { context.invalidate() }
+        try requireFaceID(context)
         try await context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason)
-        guard let key = try existing(context: context) else {
+        guard let key = try existing(.approver, context: context) else {
             throw KeyError.security("no approver key on this phone; enroll it at a Mac")
         }
+        return try sign(message, with: key)
+    }
+
+    static func authenticate(_ message: Data) throws -> Data {
+        guard let key = try existing(.transport, context: nil) else {
+            throw KeyError.security("no transport key on this phone; enroll it at a Mac")
+        }
+        return try sign(message, with: key)
+    }
+
+    private static func sign(_ message: Data, with key: SecKey) throws -> Data {
         var error: Unmanaged<CFError>?
         guard let signature = SecKeyCreateSignature(key, .ecdsaSignatureMessageX962SHA256, message as CFData, &error) as Data? else {
             throw KeyError.security(describe(error))
@@ -44,10 +81,10 @@ enum SigningKey {
         return signature
     }
 
-    private static func existing(context: LAContext?) throws -> SecKey? {
+    private static func existing(_ role: Role, context: LAContext?) throws -> SecKey? {
         var query: [String: Any] = [
             kSecClass as String: kSecClassKey,
-            kSecAttrApplicationTag as String: tag,
+            kSecAttrApplicationTag as String: role.tag,
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecReturnRef as String: true,
         ]
@@ -66,12 +103,12 @@ enum SigningKey {
         }
     }
 
-    private static func create() throws -> SecKey {
+    private static func create(_ role: Role) throws -> SecKey {
         var error: Unmanaged<CFError>?
         guard let access = SecAccessControlCreateWithFlags(
             nil,
             kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-            [.privateKeyUsage, .biometryCurrentSet],
+            role.flags,
             &error
         ) else {
             throw KeyError.security(describe(error))
@@ -82,7 +119,7 @@ enum SigningKey {
             kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
             kSecPrivateKeyAttrs as String: [
                 kSecAttrIsPermanent as String: true,
-                kSecAttrApplicationTag as String: tag,
+                kSecAttrApplicationTag as String: role.tag,
                 kSecAttrAccessControl as String: access,
             ],
         ]

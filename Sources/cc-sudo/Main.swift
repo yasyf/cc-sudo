@@ -198,6 +198,8 @@ struct Trust: AsyncParsableCommand {
                 print("enrolled phone \(record.name) (\(record.device)) key \(record.keyID)")
             } catch PhoneTrust.PhoneTrustError.notRoot {
                 throw ValidationError("trust requires root: sudo cc-sudo trust --phone \(phone)")
+            } catch PhoneTrust.PhoneTrustError.noSudoInvoker {
+                throw ValidationError("trust --phone runs tailscale as the invoking user; run it through sudo: sudo cc-sudo trust --phone \(phone)")
             } catch {
                 exitClassifying(error)
             }

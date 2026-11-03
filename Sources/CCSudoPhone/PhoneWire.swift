@@ -25,50 +25,86 @@ public struct EnrollmentOffer: Codable, Sendable, Equatable {
     }
 }
 
-/// The phone's one JSON line to the enrolling sudo process: the offer's code,
-/// its Secure Enclave public key (base64 X9.63), and its APNs device token.
-public struct EnrollmentSubmission: Codable, Sendable, Equatable {
+/// The phone's first JSON line: the offer's one-time code and a commitment
+/// to everything it will reveal, sent before it sees the Mac's nonce, so a
+/// relay cannot grind a key whose confirmation code matches.
+public struct EnrollmentCommitment: Codable, Sendable, Equatable {
     public let code: String
-    public let publicKey: String
-    public let pushToken: String
+    public let commitment: String
 
-    enum CodingKeys: String, CodingKey {
-        case code
-        case publicKey = "public_key"
-        case pushToken = "push_token"
-    }
-
-    public init(code: String, publicKey: String, pushToken: String) {
+    public init(code: String, commitment: String) {
         self.code = code
-        self.publicKey = publicKey
-        self.pushToken = pushToken
+        self.commitment = commitment
     }
 }
 
-/// The sudo process's JSON lines back: `received` once it holds the key and
-/// waits for the typed confirmation code, then `enrolled` or `refused`.
+/// The phone's second JSON line, once the Mac has sent its nonce: its signing
+/// key (Face ID, base64 X9.63), its transport key (no biometry; it
+/// authenticates fetches and answers), its APNs token, and the committed nonce.
+public struct EnrollmentReveal: Codable, Sendable, Equatable {
+    public let publicKey: String
+    public let transportKey: String
+    public let pushToken: String
+    public let nonce: String
+
+    enum CodingKeys: String, CodingKey {
+        case nonce
+        case publicKey = "public_key"
+        case transportKey = "transport_key"
+        case pushToken = "push_token"
+    }
+
+    public init(publicKey: String, transportKey: String, pushToken: String, nonce: String) {
+        self.publicKey = publicKey
+        self.transportKey = transportKey
+        self.pushToken = pushToken
+        self.nonce = nonce
+    }
+
+    public var commitment: String {
+        Data(SHA256.hash(data: Subject.canonicalEncoding(argv: [publicKey, transportKey, pushToken, nonce])))
+            .base64EncodedString()
+    }
+}
+
+/// The sudo process's JSON lines back: `challenge` with its nonce after a
+/// valid commitment, `received` once the reveal matches it, then `enrolled`
+/// or `refused`.
 public struct EnrollmentReply: Codable, Sendable, Equatable {
     public enum Status: String, Codable, Sendable {
+        case challenge
         case received
         case enrolled
         case refused
     }
 
     public let status: Status
+    public let macNonce: String?
     public let detail: String?
 
-    public init(status: Status, detail: String? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case status, detail
+        case macNonce = "mac_nonce"
+    }
+
+    public init(status: Status, macNonce: String? = nil, detail: String? = nil) {
         self.status = status
+        self.macNonce = macNonce
         self.detail = detail
     }
 }
 
-/// The six digits the phone shows and the human types at the Mac, so the key
-/// the Mac enrolls is the key on the phone in their hand.
+/// The six digits the phone shows and the human types at the Mac: a digest of
+/// the whole exchange, so the keys, push token and nonces the Mac enrolls are
+/// the ones on the phone in their hand. Because the phone commits before the
+/// Mac's nonce is known, a relay matches it with odds of one in a million per
+/// enrollment, not by search.
 public enum ConfirmationCode {
-    public static func of(publicKey: Data) -> String {
-        let digest = Array(SHA256.hash(data: publicKey))
-        let value = digest.prefix(4).reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+    public static func of(code: String, mac: String, reveal: EnrollmentReveal, macNonce: String) -> String {
+        let transcript = Subject.canonicalEncoding(argv: [
+            code, mac, reveal.publicKey, reveal.transportKey, reveal.pushToken, reveal.nonce, macNonce,
+        ])
+        let value = SHA256.hash(data: transcript).prefix(4).reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
         return String(format: "%06u", value % 1_000_000)
     }
 }
@@ -113,6 +149,20 @@ public struct ApprovalAnswer: Codable, Sendable, Equatable {
         self.verdict = verdict
         self.keyID = keyID
         self.sig = sig
+    }
+}
+
+/// How the phone authenticates a fetch or an answer to synckitd: an
+/// `Authorization: CCSudoPhone <base64 DER signature>` header by its transport
+/// key over this message, so a tailnet node that is not the enrolled phone
+/// reads no command and posts no answer.
+public enum TransportAuth {
+    public static let scheme = "CCSudoPhone"
+
+    public static func message(method: String, id: String, body: Data) -> Data {
+        Subject.canonicalEncoding(argv: [
+            "cc-sudo-phone-v1", method, id, Data(SHA256.hash(data: body)).base64EncodedString(),
+        ])
     }
 }
 

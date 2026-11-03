@@ -5,13 +5,16 @@ import Foundation
 import Network
 
 /// `sudo cc-sudo trust --phone <name>`: draws an enrollment QR code, listens
-/// once on this Mac's tailnet address for the phone's key, names the device
+/// once on this Mac's tailnet address for the phone's keys, names the device
 /// that answered by `tailscale whois`, and enrolls it once the human types
-/// the code the phone shows. The sudo process receives the key itself;
-/// synckitd never touches enrollment.
+/// the code the phone shows. The sudo process receives the keys itself;
+/// synckitd never touches enrollment. The tailscale CLI runs as the sudo
+/// invoker, never as root, so its answers only name the device; the typed
+/// code is what makes the keys trustworthy.
 public struct PhoneTrust: Sendable {
     public enum PhoneTrustError: Error, Sendable {
         case notRoot
+        case noSudoInvoker
         case tailscaleMissing
         case tailscaleFailed(command: String, stderr: String)
         case noTailnetAddress
@@ -19,6 +22,7 @@ public struct PhoneTrust: Sendable {
         case qrUnavailable
     }
 
+    static let sudo = "/usr/bin/sudo"
     static let tailscaleCandidates = [
         "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
         "/opt/homebrew/bin/tailscale",
@@ -28,6 +32,7 @@ public struct PhoneTrust: Sendable {
     let runner: any ProcessRunner
     let store: TrustStore
     let euid: @Sendable () -> uid_t
+    let invokerUID: @Sendable () -> uid_t?
     let mac: @Sendable () throws -> String
     let readConfirmation: @Sendable () -> String?
 
@@ -35,27 +40,31 @@ public struct PhoneTrust: Sendable {
         runner: any ProcessRunner = LiveProcessRunner(),
         store: TrustStore = TrustStore(),
         euid: @escaping @Sendable () -> uid_t = { geteuid() },
+        invokerUID: @escaping @Sendable () -> uid_t? = { PromptStrategy.sudoInvokerUID() },
         mac: @escaping @Sendable () throws -> String = { try OriginIdentity.read() },
         readConfirmation: @escaping @Sendable () -> String? = { readLine() }
     ) {
         self.runner = runner
         self.store = store
         self.euid = euid
+        self.invokerUID = invokerUID
         self.mac = mac
         self.readConfirmation = readConfirmation
     }
 
     public func trust(phone name: String) async throws -> PhoneRecord {
         guard euid() == 0 else { throw PhoneTrustError.notRoot }
-        let enrollment = try PhoneEnrollment(name: name, code: PhoneEnrollment.newCode())
+        guard let invoker = invokerUID() else { throw PhoneTrustError.noSudoInvoker }
         let mac = try mac()
+        let code = try PhoneEnrollment.newCode()
+        let enrollment = try PhoneEnrollment(name: name, mac: mac, code: code)
         let tailscale = try Self.locateTailscale()
-        let node = try await selfNode(tailscale: tailscale)
+        let node = try await selfNode(tailscale: tailscale, invoker: invoker)
         let session = EnrollmentSession(enrollment: enrollment) { address in
-            try await whois(tailscale: tailscale, address: address)
+            try await whois(tailscale: tailscale, invoker: invoker, address: address)
         }
         let port = try await session.listen(on: node.address)
-        let offer = EnrollmentOffer(mac: mac, host: node.dnsName, address: node.address, port: port, code: enrollment.code)
+        let offer = EnrollmentOffer(mac: mac, host: node.dnsName, address: node.address, port: port, code: code)
         try print(TerminalQR.render(JSONEncoder().encode(offer)))
         print("Scan this with the cc-sudo Approver app on your iPhone to enroll it as \(name) on \(mac).")
 
@@ -86,7 +95,7 @@ public struct PhoneTrust: Sendable {
         let address: String
     }
 
-    func selfNode(tailscale: String) async throws -> SelfNode {
+    func selfNode(tailscale: String, invoker: uid_t) async throws -> SelfNode {
         struct Status: Decodable {
             struct Node: Decodable {
                 let dnsName: String
@@ -104,7 +113,7 @@ public struct PhoneTrust: Sendable {
                 case node = "Self"
             }
         }
-        let status = try await JSONDecoder().decode(Status.self, from: run(tailscale, ["status", "--json"]))
+        let status = try await JSONDecoder().decode(Status.self, from: run(tailscale, invoker: invoker, ["status", "--json"]))
         guard let address = status.node.addresses.first(where: { $0.contains(".") }) else {
             throw PhoneTrustError.noTailnetAddress
         }
@@ -112,7 +121,7 @@ public struct PhoneTrust: Sendable {
         return SelfNode(dnsName: dnsName, address: address)
     }
 
-    func whois(tailscale: String, address: String) async throws -> TailnetDevice {
+    func whois(tailscale: String, invoker: uid_t, address: String) async throws -> TailnetDevice {
         struct WhoIs: Decodable {
             struct Node: Decodable {
                 struct HostInfo: Decodable {
@@ -140,12 +149,17 @@ public struct PhoneTrust: Sendable {
                 case node = "Node"
             }
         }
-        let who = try await JSONDecoder().decode(WhoIs.self, from: run(tailscale, ["whois", "--json", address]))
+        let who = try await JSONDecoder().decode(WhoIs.self, from: run(tailscale, invoker: invoker, ["whois", "--json", address]))
         return TailnetDevice(nodeID: who.node.stableID, name: who.node.name, os: who.node.hostInfo.os)
     }
 
-    func run(_ tailscale: String, _ arguments: [String]) async throws -> Data {
-        let result = try await runner.run(executable: tailscale, arguments: arguments, stdin: nil, environment: nil)
+    func run(_ tailscale: String, invoker: uid_t, _ arguments: [String]) async throws -> Data {
+        let result = try await runner.run(
+            executable: Self.sudo,
+            arguments: ["-n", "-u", "#\(invoker)", "-H", tailscale] + arguments,
+            stdin: nil,
+            environment: nil
+        )
         guard result.exitCode == 0 else {
             throw PhoneTrustError.tailscaleFailed(
                 command: (["tailscale"] + arguments).joined(separator: " "),
@@ -156,11 +170,13 @@ public struct PhoneTrust: Sendable {
     }
 }
 
-/// The one-shot listener behind `trust --phone`: every connection sends one
-/// JSON line; the first iPhone that echoes the code is held until the human
+/// The one-shot listener behind `trust --phone`: a connection sends a
+/// commitment line, gets the Mac's nonce, and sends its reveal, each line
+/// within `lineDeadline`; the first iPhone through is held until the human
 /// confirms, and any failure ends the session for every waiter.
 actor EnrollmentSession {
     static let maxLine = 8192
+    static let lineDeadline = Duration.seconds(10)
 
     private var enrollment: PhoneEnrollment
     private let whois: @Sendable (String) async throws -> TailnetDevice
@@ -208,7 +224,7 @@ actor EnrollmentSession {
 
     func firstPhone() async throws -> TailnetDevice {
         if let failure { throw failure }
-        if let held = enrollment.held { return held.device }
+        if let held = enrollment.committed, held.reveal != nil { return held.device }
         return try await withCheckedThrowingContinuation { waiters.append($0) }
     }
 
@@ -230,7 +246,7 @@ actor EnrollmentSession {
         guard failure == nil,
               case let .hostPort(host, _) = connection.endpoint,
               let line = try? await Self.receiveLine(on: connection),
-              let submission = try? JSONDecoder().decode(EnrollmentSubmission.self, from: line),
+              let commitment = try? JSONDecoder().decode(EnrollmentCommitment.self, from: line),
               let device = try? await whois("\(host)")
         else {
             await Self.send(EnrollmentReply(status: .refused), on: connection)
@@ -238,18 +254,20 @@ actor EnrollmentSession {
             return
         }
         do {
-            guard try enrollment.receive(submission, from: device) else {
+            guard let macNonce = try enrollment.commit(commitment, from: device) else {
                 await Self.send(EnrollmentReply(status: .refused, detail: "wrong code"), on: connection)
                 connection.cancel()
                 return
             }
+            await Self.send(EnrollmentReply(status: .challenge, macNonce: macNonce), on: connection)
+            let reveal = try await JSONDecoder().decode(EnrollmentReveal.self, from: Self.receiveLine(on: connection))
+            _ = try enrollment.reveal(reveal, from: device)
         } catch {
             fail(error)
             await Self.send(EnrollmentReply(status: .refused, detail: String(describing: error)), on: connection)
             connection.cancel()
             return
         }
-        heldConnection?.cancel()
         heldConnection = connection
         await Self.send(EnrollmentReply(status: .received), on: connection)
         let waiting = waiters
@@ -266,7 +284,16 @@ actor EnrollmentSession {
         listener?.cancel()
     }
 
-    static func receiveLine(on connection: NWConnection, buffer: Data = Data()) async throws -> Data {
+    static func receiveLine(on connection: NWConnection) async throws -> Data {
+        let deadline = Task {
+            try await Task.sleep(for: lineDeadline)
+            connection.cancel()
+        }
+        defer { deadline.cancel() }
+        return try await receiveLine(on: connection, buffer: Data())
+    }
+
+    static func receiveLine(on connection: NWConnection, buffer: Data) async throws -> Data {
         let chunk: Data = try await withCheckedThrowingContinuation { continuation in
             connection.receive(minimumIncompleteLength: 1, maximumLength: maxLine) { data, _, isComplete, error in
                 if let error {
