@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/yasyf/authkit",
       "state" : {
-        "revision" : "e705c18be776efca815006a1149d5e0612c7ebd2",
-        "version" : "0.1.0"
+        "revision" : "442f5da4cfe8df321f470d7e71400b7d30b14100",
+        "version" : "0.3.0"
       }
     },
     {
