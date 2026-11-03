@@ -33,7 +33,11 @@ private final class FixtureLines: @unchecked Sendable {
 
     init(_ handle: FileHandle) {
         handle.readabilityHandler = { [weak self] handle in
-            self?.ingest(handle.availableData)
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+            }
+            self?.ingest(chunk)
         }
     }
 
