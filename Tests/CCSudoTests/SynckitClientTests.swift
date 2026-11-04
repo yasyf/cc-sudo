@@ -120,9 +120,9 @@ private final class SynckitFixture: @unchecked Sendable {
         }
     }
 
-    // Closing stdin asks the fixture to drain and exit; one still running after
-    // exitGrace is killed, and teardown never waits past killGrace more, because
-    // an unbounded waitUntilExit here has parked the whole test run on CI.
+    /// Closing stdin asks the fixture to drain and exit; one still running after
+    /// exitGrace is killed, and teardown never waits past killGrace more, because
+    /// an unbounded waitUntilExit here has parked the whole test run on CI.
     private static func stop(process: Process, stdin: Pipe, home: URL) {
         try? stdin.fileHandleForWriting.close()
         if !waitForExit(process, within: exitGrace) {
