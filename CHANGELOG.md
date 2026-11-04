@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-04
+
 ### Added
 - `sudo cc-sudo trust --phone <name>` enrolls the cc-sudo Approver iPhone app: it
   draws a QR code, takes the phone's Secure Enclave keys over the Mac's tailnet

@@ -1,0 +1,81 @@
+name: Approver TestFlight (iOS)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Apps/Approver/**"
+      - "Sources/CCSudoPhone/**"
+      - "Package.swift"
+      - "Package.resolved"
+      - ".github/workflows/testflight-ios.yml"
+  schedule:
+    - cron: "37 9 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select Xcode 26
+        run: |
+          set -euo pipefail
+          app="$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' -print | sort -V | tail -1)"
+          test -n "$app"
+          sudo xcode-select -s "$app/Contents/Developer"
+
+      - name: Write App Store Connect API key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/asc_authkey.p8"
+          printf '%s' "$ASC_KEY_P8" > "$KEY_PATH"
+          echo "ASC_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Generate the Xcode project
+        run: |
+          command -v xcodegen >/dev/null || brew install xcodegen
+          xcodegen generate --spec Apps/Approver/project.yml
+
+      - name: Archive (cloud signing)
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: >
+          xcodebuild archive
+          -project Apps/Approver/Approver.xcodeproj
+          -scheme Approver
+          -destination 'generic/platform=iOS'
+          -archivePath build/Approver.xcarchive
+          -allowProvisioningUpdates
+          -authenticationKeyPath "$ASC_KEY_PATH"
+          -authenticationKeyID "$ASC_KEY_ID"
+          -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          CODE_SIGN_IDENTITY=-
+          AD_HOC_CODE_SIGNING_ALLOWED=YES
+          DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
+          CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER"
+
+      - name: Export and upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: >
+          xcodebuild -exportArchive
+          -archivePath build/Approver.xcarchive
+          -exportOptionsPlist Apps/Approver/ExportOptions.plist
+          -exportPath build/export
+          -allowProvisioningUpdates
+          -authenticationKeyPath "$ASC_KEY_PATH"
+          -authenticationKeyID "$ASC_KEY_ID"
+          -authenticationKeyIssuerID "$ASC_ISSUER_ID"
