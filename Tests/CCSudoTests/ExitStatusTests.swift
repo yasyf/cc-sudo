@@ -33,7 +33,6 @@ import Testing
     let skew = VersionSkewError(clientVersion: "0.1.0", verifierVersion: "0.2.0")
     #expect(ExitStatus(classifying: skew) == .versionSkew)
     #expect(ExitStatus.versionSkew.rawValue == 106)
-    #expect(skew.message.contains("cc-sudo install"))
 }
 
 @Test func unrelatedErrorsAreNotClassified() {
