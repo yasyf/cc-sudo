@@ -41,6 +41,25 @@ public enum RunClient {
         return compatibility == .verifierBehind ? behindMessage(installed: installed, client: clientVersion) : nil
     }
 
+    private static func checkVerifier(
+        runner: any ProcessRunner,
+        timeoutMS: Int?,
+        deadline: ContinuousClock.Instant?
+    ) async throws -> String? {
+        guard let timeoutMS, let deadline else {
+            return try await checkVerifier(runner: runner)
+        }
+        return try await withThrowingTaskGroup(of: String?.self) { group in
+            group.addTask { try await checkVerifier(runner: runner) }
+            group.addTask {
+                try await Task.sleep(until: deadline, clock: .continuous)
+                throw RunError.timedOut(afterMS: timeoutMS)
+            }
+            defer { group.cancelAll() }
+            return try await group.next() ?? nil
+        }
+    }
+
     static func installedVerifierVersion(runner: any ProcessRunner) async -> String? {
         guard let result = try? await runner.run(
             executable: verifierPath, arguments: ["--version"], stdin: nil, environment: nil
@@ -80,9 +99,10 @@ public enum RunClient {
             argv: argv,
             currentDirectory: cwd ?? FileManager.default.currentDirectoryPath
         )
+        let deadline = timeoutMS.map { ContinuousClock.now + .milliseconds($0) }
         let warning: String?
         do {
-            warning = try await checkVerifier(runner: preflightRunner)
+            warning = try await checkVerifier(runner: preflightRunner, timeoutMS: timeoutMS, deadline: deadline)
         } catch let skew as VersionSkewError {
             let code = ExitStatus.versionSkew.rawValue
             return CapturedRun(
@@ -92,7 +112,12 @@ public enum RunClient {
                 verdict: ExitStatus.verdict(forExitCode: code)
             )
         }
-        let run = try await captureInvocation(invocation(argv: resolved), cwd: cwd, timeoutMS: timeoutMS)
+        let run = try await captureInvocation(
+            invocation(argv: resolved),
+            cwd: cwd,
+            timeoutMS: timeoutMS,
+            deadline: deadline
+        )
         return CapturedRun(
             stdout: run.stdout,
             stderr: (warning.map { "cc-sudo: \($0)\n" } ?? "") + run.stderr,
@@ -104,7 +129,8 @@ public enum RunClient {
     private static func captureInvocation(
         _ full: [String],
         cwd: String?,
-        timeoutMS: Int?
+        timeoutMS: Int?,
+        deadline: ContinuousClock.Instant?
     ) async throws -> CapturedRun {
         let process = Process()
         process.executableURL = URL(filePath: full[0])
@@ -124,16 +150,16 @@ public enum RunClient {
         async let stderrData = Task.detached { stderrPipe.fileHandleForReading.readDataToEndOfFile() }.value
 
         let timedOut = OSAllocatedUnfairLock(initialState: false)
-        if let timeoutMS {
-            let deadline = Task {
-                try await Task.sleep(for: .milliseconds(timeoutMS))
+        if let deadline {
+            let watchdog = Task {
+                try await Task.sleep(until: deadline, clock: .continuous)
                 if process.isRunning {
                     timedOut.withLock { $0 = true }
                     process.terminate()
                 }
             }
             await Task.detached { process.waitUntilExit() }.value
-            deadline.cancel()
+            watchdog.cancel()
         } else {
             await Task.detached { process.waitUntilExit() }.value
         }

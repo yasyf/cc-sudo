@@ -47,7 +47,8 @@ struct ReleaseVersion: Comparable {
     init?(_ text: String) {
         let parts = text.split(separator: ".", omittingEmptySubsequences: false)
         let numbers = parts.compactMap { part in
-            part.utf8.allSatisfy { (0x30 ... 0x39).contains($0) } ? Int(part) : nil
+            let isDigits = part.utf8.allSatisfy { (0x30 ... 0x39).contains($0) }
+            return isDigits && (part == "0" || part.first != "0") ? Int(part) : nil
         }
         guard parts.count == 3, numbers.count == 3 else { return nil }
         major = numbers[0]

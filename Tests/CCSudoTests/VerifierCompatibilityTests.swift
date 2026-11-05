@@ -35,7 +35,7 @@ private func versionRunner(_ version: String, exitCode: Int32 = 0) -> FakeRunner
 
 @Test(arguments: [
     "", "garbage", "1", "1.2", "1.2.3.4", "1.2.", ".1.2", "1.2.3-rc.1", "1.2.3+meta", "+1.2.3", "-1.2.3",
-    "١.٢.٣", "1.2.3\n", "99999999999999999999.0.0", "0.15.00",
+    "١.٢.٣", "1.2.3\n", "99999999999999999999.0.0", "0.15.00", "0.016.0", "00.99.0", "1.02.0",
 ])
 func anUnrecognizedClientVersionIsRefused(client: String) {
     #expect(!VerifierCompatibility(client: client, verifier: "0.15.0", minimumVerifier: "0.15.0").allowsRun)
@@ -95,6 +95,25 @@ func anUnrecognizedClientVersionIsRefused(client: String) {
     #expect(run.verdict == "version_skew")
     #expect(run.stderr.contains("sudo cc-sudo install"))
     #expect(runner.spawns.count == 1)
+}
+
+private struct StalledRunner: ProcessRunner {
+    func run(
+        executable _: String,
+        arguments _: [String],
+        stdin _: Data?,
+        environment _: [String: String]?
+    ) async throws -> SubprocessResult {
+        try await Task.sleep(for: .seconds(600))
+        return SubprocessResult(exitCode: 0, stdout: Data(), stderr: Data())
+    }
+}
+
+@Test(.timeLimit(.minutes(1)))
+func aStalledPreflightStaysInsideTheCapturedRunsDeadline() async {
+    await #expect(throws: RunClient.RunError.self) {
+        _ = try await RunClient.capture(argv: ["/usr/bin/true"], timeoutMS: 50, preflightRunner: StalledRunner())
+    }
 }
 
 @Test func doctorPassesAtTheCurrentVersion() {
