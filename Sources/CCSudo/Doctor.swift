@@ -56,21 +56,10 @@ public struct Doctor: Sendable {
                 detail: "\(path) missing — run 'sudo cc-sudo install'"
             )
         }
-        guard let result = try? await runner.run(
-            executable: path, arguments: ["--version"], stdin: nil, environment: nil
-        ), result.exitCode == 0 else {
+        guard let installed = await RunClient.installedVerifierVersion(runner: runner) else {
             return CheckResult(name: "verifier", status: .fail, detail: "\(path) --version failed")
         }
-        let installed = result.stdout.utf8Lossy
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard installed == Version.current else {
-            return CheckResult(
-                name: "verifier",
-                status: .fail,
-                detail: "version skew: CLI \(Version.current) vs verifier \(installed) — run 'sudo cc-sudo install'"
-            )
-        }
-        return CheckResult(name: "verifier", status: .pass, detail: "\(path) at \(installed)")
+        return Self.verifierResult(path: path, installed: installed, client: Version.current)
     }
 
     func sudoersCheck() async -> CheckResult {
@@ -282,6 +271,27 @@ public struct Doctor: Sendable {
             )
         case 3: return CheckResult(name: "prompt probe", status: .warn, detail: "screen locked — try unlocked")
         default: return CheckResult(name: "prompt probe", status: .fail, detail: "helper exited \(result.exitCode)")
+        }
+    }
+}
+
+extension Doctor {
+    static func verifierResult(path: String, installed: String, client: String) -> CheckResult {
+        switch VerifierCompatibility(client: client, verifier: installed) {
+        case .current:
+            CheckResult(name: "verifier", status: .pass, detail: "\(path) at \(installed)")
+        case .verifierBehind:
+            CheckResult(
+                name: "verifier",
+                status: .warn,
+                detail: RunClient.behindMessage(installed: installed, client: client)
+            )
+        case .clientBehind, .incompatible:
+            CheckResult(
+                name: "verifier",
+                status: .fail,
+                detail: VersionSkewError(clientVersion: client, verifierVersion: installed).message
+            )
         }
     }
 }

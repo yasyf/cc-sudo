@@ -9,7 +9,7 @@ struct Root: AsyncParsableCommand {
         abstract: "Sudo for Claude, one Touch ID tap per command.",
         discussion: """
         Routable exit codes: 103 denied, 104 unavailable, 105 verification \
-        failed, 106 version skew (run 'cc-sudo install'). An approved \
+        failed, 106 version skew (the message names the fix). An approved \
         command's own exit status passes through verbatim.
         """,
         version: Version.current,
@@ -56,7 +56,7 @@ struct Run: AsyncParsableCommand {
             throw ValidationError("no command given; usage: cc-sudo run -- <command> [args...]")
         }
         do {
-            try RunClient.exec(argv: command)
+            try await RunClient.exec(argv: command)
         } catch {
             exitClassifying(error)
         }
@@ -76,7 +76,7 @@ struct Exec: AsyncParsableCommand {
     var command: [String]
 
     func run() async throws {
-        guard clientVersion == Version.current else {
+        guard VerifierCompatibility(client: clientVersion, verifier: Version.current).allowsRun else {
             exitClassifying(VersionSkewError(clientVersion: clientVersion, verifierVersion: Version.current))
         }
         guard geteuid() == 0 else {
