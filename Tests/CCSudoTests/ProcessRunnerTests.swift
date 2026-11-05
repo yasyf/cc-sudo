@@ -22,3 +22,16 @@ func liveRunnerSurvivesAChildThatExitsWithoutReadingStdin() async {
         )
     }
 }
+
+@Test(.timeLimit(.minutes(1)))
+func cancellingALiveRunTerminatesTheChild() async throws {
+    let run = Task {
+        try await LiveProcessRunner().run(
+            executable: "/bin/sleep", arguments: ["600"], stdin: nil, environment: nil
+        )
+    }
+    try await Task.sleep(for: .milliseconds(200))
+    run.cancel()
+    let result = try await run.value
+    #expect(result.exitCode != 0)
+}

@@ -75,6 +75,10 @@ The full flag surface lives in `cc-sudo --help`.
 
 `cc-sudo run` hands the argv to a root-owned verifier installed at `/Library/PrivilegedHelperTools/cc-sudo-exec`. The verifier mints a fresh nonce, requires a Secure-Enclave signature over it from the signed [authkit](https://github.com/yasyf/authkit) helper (the Touch ID tap *is* that signing operation), checks the signature against the enrolled key, pins authkit by its designated requirement, and only then execs the exact argv it hashed — no window between approval and exec. Locally the sheet renders through a `launchctl asuser` spawn; over SSH or on a locked Mac it routes to synckitd and, if needed, to a live peer.
 
+### Upgrades
+
+`brew upgrade cc-sudo` updates the CLI, not the root-owned verifier. Commands keep running against the older verifier, and every run prints a warning naming `sudo cc-sudo install` until you run it; `cc-sudo doctor` reports the same state. A release raises the verifier floor only when the verifier command line changes or a verifier defect must not keep running. Below that floor, and for a CLI older than the verifier, `cc-sudo run` exits 106 with the fix in its message and no prompt appears.
+
 ## Development
 
 Build with `swift build`. Test with `scripts/swift-test.sh`, which builds the Go synckitd stand-in in `Tests/SynckitFixture` that the client tests dial; conventions live in [AGENTS.md](AGENTS.md).

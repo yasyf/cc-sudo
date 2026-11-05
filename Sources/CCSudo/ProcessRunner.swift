@@ -68,15 +68,21 @@ public struct LiveProcessRunner: ProcessRunner {
         }
         try stdinWriter.close()
 
-        // Drain both pipes concurrently BEFORE waiting: a child that fills a
-        // pipe buffer while nobody reads would deadlock against waitUntilExit.
-        async let stdoutData = readToEnd(stdoutPipe)
-        async let stderrData = readToEnd(stderrPipe)
-        let stdout = try await stdoutData
-        let stderr = try await stderrData
+        return try await withTaskCancellationHandler {
+            // Drain both pipes concurrently BEFORE waiting: a child that fills a
+            // pipe buffer while nobody reads would deadlock against waitUntilExit.
+            async let stdoutData = readToEnd(stdoutPipe)
+            async let stderrData = readToEnd(stderrPipe)
+            let stdout = try await stdoutData
+            let stderr = try await stderrData
 
-        await Task.detached { process.waitUntilExit() }.value
-        return SubprocessResult(exitCode: process.terminationStatus, stdout: stdout, stderr: stderr)
+            await Task.detached { process.waitUntilExit() }.value
+            return SubprocessResult(exitCode: process.terminationStatus, stdout: stdout, stderr: stderr)
+        } onCancel: {
+            if process.isRunning {
+                process.terminate()
+            }
+        }
     }
 
     private func readToEnd(_ pipe: Pipe) async throws -> Data {

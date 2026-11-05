@@ -6,7 +6,7 @@ import os
 /// Sets up (and tears down) the privileged boundary. Everything it writes is
 /// root-owned at STABLE paths — never a Homebrew Cellar/Caskroom path, which
 /// are user-writable and would be instant escalation behind the NOPASSWD rule.
-/// A brew upgrade therefore requires re-running `cc-sudo install`.
+/// A brew upgrade therefore leaves the verifier behind until `sudo cc-sudo install` re-runs.
 public struct Installer: Sendable {
     public enum InstallError: Error, Sendable {
         case notRoot

@@ -6,6 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-04
+
+### Changed
+- A `brew upgrade` no longer stops admin commands. The verifier accepts a CLI at
+  or above its own version, and a CLI at or above the verifier floor keeps
+  running against an older verifier, printing a warning that names
+  `sudo cc-sudo install` on every run. `cc-sudo doctor` reports the same state as
+  a warning instead of a failure. The approval itself is unchanged: nonce, argv
+  signature, enrolled key and authkit pin are verified exactly as before.
+- A CLI older than the verifier, an unrecognized client version, and a verifier
+  below the floor still exit 106. A CLI now reads the verifier's version before
+  sudo and names the fix: `sudo cc-sudo install` for the verifier,
+  `brew upgrade cc-sudo` for the CLI.
+- This release sets the floor to 0.15.0, so upgrading from 0.14.0 or older still
+  needs one `sudo cc-sudo install`; later upgrades do not, unless a release
+  raises the floor.
+
+### Fixed
+- `cc-sudo run` and the MCP tool report a missing or unreadable verifier as exit
+  106 instead of sudo's exit 1, which the MCP tool read as approved.
+
 ## [0.14.0] - 2026-11-04
 
 ### Added

@@ -12,7 +12,8 @@ import AuthKit
 ///       malformed, the authkit bundle failed its designated-requirement pin,
 ///       or the consent transport returned an unusable response (never a silent
 ///       exit 1 that the MCP surface would read as approved)
-///   106 versionSkew — CLI and root-owned verifier disagree; run `cc-sudo install`
+///   106 versionSkew — the CLI is older than the root-owned verifier, or the
+///       verifier is below the CLI's floor or unreadable; the message names the fix
 public enum ExitStatus: Int32, Sendable {
     case denied = 103
     case unavailable = 104
@@ -51,18 +52,27 @@ public enum ExitStatus: Int32, Sendable {
     }
 }
 
-/// The CLI on disk and the root-owned verifier copy disagree on version; the
-/// fix is always a re-install, so the message says so.
+/// The CLI and the root-owned verifier copy cannot work together; the message
+/// names the fix for whichever side is out of date.
 public struct VersionSkewError: Error, Sendable {
     public let clientVersion: String
-    public let verifierVersion: String
+    public let verifierVersion: String?
 
-    public init(clientVersion: String, verifierVersion: String) {
+    public init(clientVersion: String, verifierVersion: String?) {
         self.clientVersion = clientVersion
         self.verifierVersion = verifierVersion
     }
 
     public var message: String {
-        "cc-sudo \(clientVersion) does not match the installed verifier \(verifierVersion); run 'cc-sudo install'"
+        guard let verifierVersion else {
+            return "cc-sudo \(clientVersion) found no usable verifier at \(RunClient.verifierPath); " +
+                "run 'sudo cc-sudo install'"
+        }
+        if VerifierCompatibility(client: clientVersion, verifier: verifierVersion) == .clientBehind {
+            return "cc-sudo \(clientVersion) is older than the installed verifier \(verifierVersion); " +
+                "run 'brew upgrade cc-sudo' and restart any running 'cc-sudo mcp'"
+        }
+        return "cc-sudo \(clientVersion) cannot use the installed verifier \(verifierVersion); " +
+            "run 'sudo cc-sudo install'"
     }
 }
